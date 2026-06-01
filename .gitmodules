@@ -1,0 +1,23 @@
+[submodule "ext/SDL"]
+	path = ext/SDL
+	url = https://github.com/libsdl-org/SDL
+	branch = release-3.4.x
+[submodule "ext/minizip-ng"]
+	path = ext/minizip-ng
+	url = https://github.com/zlib-ng/minizip-ng
+[submodule "ext/cimplot"]
+	path = ext/cimplot
+	url = https://github.com/cimgui/cimplot
+[submodule "ext/cimgui"]
+	path = ext/cimgui
+	url = https://github.com/cimgui/cimgui
+[submodule "ext/cJSON"]
+	path = ext/cJSON
+	url = https://github.com/mvieth/cJSON/
+	branch = cmake4
+[submodule "ext/luajit-cmake"]
+	path = ext/luajit-cmake
+	url = https://github.com/zhaozg/luajit-cmake
+[submodule "ext/LuaJIT"]
+	path = ext/LuaJIT
+	url = https://github.com/LuaJIT/LuaJIT
