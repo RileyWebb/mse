@@ -21,3 +21,6 @@
 [submodule "ext/LuaJIT"]
 	path = ext/LuaJIT
 	url = https://github.com/LuaJIT/LuaJIT
+[submodule "libmse"]
+	path = libmse
+	url = https://github.com/RileyWebb/libmse
