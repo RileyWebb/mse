@@ -1,7 +1,7 @@
 #define DEBUG_LOG_SOURCE "input"
 #include "frontend_input.h"
 #include "frontend_cimgui.h" /* SDL3 is pulled in transitively */
-#include "libmse/debug.h"
+#include "libmse/libmse_debug.h"
 
 #include <SDL3/SDL.h>
 

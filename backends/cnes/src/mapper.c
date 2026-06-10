@@ -1,6 +1,6 @@
 #include "cNES/mapper.h"
 
-#include "libmse/debug.h"
+#include "libmse/libmse_debug.h"
 
 #include "cNES/bus.h"
 #include "cNES/ppu.h"

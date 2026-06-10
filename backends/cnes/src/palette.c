@@ -3,7 +3,7 @@
 #include <string.h>
 #include <stdbool.h>
 
-#include "libmse/debug.h"
+#include "libmse/libmse_debug.h"
 
 #include "cNES/palette.h"
 

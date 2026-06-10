@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "libmse/debug.h"
+#include "libmse/libmse_debug.h"
 
 #include "cNES/bus.h"
 #include "cNES/apu.h"

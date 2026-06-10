@@ -100,9 +100,9 @@ static void register_cvars(NES *nes)
 
 static void register_cmds(NES *nes)
 {
-	libmse_command_register(&(libmse_command_t){"cnes_reset", "Resets the NES emulator state", 0, NULL, cmd_reset_handler});
-	libmse_command_register(&(libmse_command_t){"cnes_load_palette", "Loads a palette from the specified path", 1, (const libmse_cvar_type_t[]){LIBMSE_CVAR_STRING}, cmd_load_palette_handler});
-	//libmse_command_register(&(libmse_command_t){"cnes_load_rom", "Loads a ROM from the specified path", 1, (const libmse_cvar_type_t[]){LIBMSE_CVAR_STRING}, cmd_load_rom_handler});
+	libmse_cmd_register(&(libmse_cmd_t){"cnes_reset", "Resets the NES emulator state", 0, NULL, cmd_reset_handler});
+	libmse_cmd_register(&(libmse_cmd_t){"cnes_load_palette", "Loads a palette from the specified path", 1, (const libmse_cmd_type_t[]){LIBMSE_CMD_STRING}, cmd_load_palette_handler});
+	//libmse_cmd_register(&(libmse_cmd_t){"cnes_load_rom", "Loads a ROM from the specified path", 1, (const libmse_cmd_type_t[]){LIBMSE_CMD_STRING}, cmd_load_rom_handler});
 }
 
 LIBMSE_API bool init(void)

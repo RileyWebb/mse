@@ -7,7 +7,7 @@
 #include <time.h>
 #include <math.h>
 
-#include "libmse/debug.h"
+#include "libmse/libmse_debug.h"
 #include "cNES/nes.h"
 #include "cNES/bus.h"
 #include "cNES/util.h"

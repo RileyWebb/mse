@@ -1,6 +1,6 @@
 #include "cNES/loaders/ines.h"
 
-#include "libmse/debug.h"
+#include "libmse/libmse_debug.h"
 #include "cNES/rom.h"
 
 #include <stdbool.h>
