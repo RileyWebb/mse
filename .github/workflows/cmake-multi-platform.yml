@@ -58,6 +58,11 @@ jobs:
       uses: leafo/gh-actions-lua@v10
       with:
         luaVersion: "luajit-2.1"
+      
+    - name: Setup CMake
+      uses: jwlawson/actions-setup-cmake@v2
+      with:
+        cmake-version: '4.1.0' # Specify the version you need
 
     - name: Install Full Vulkan SDK (Provides glslc for Windows)
       if: runner.os == 'Windows'
