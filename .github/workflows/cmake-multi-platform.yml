@@ -52,17 +52,14 @@ jobs:
             c_compiler: cl
 
     steps:
-    - uses: ilammy/msvc-dev-cmd@v1
-    - name: Install LuaJIT (Windows)
-      if: runner.os == 'Windows'
-      uses: leafo/gh-actions-lua@v10
-      with:
-        luaVersion: "luajit-2.1"
+    #- uses: weshigbee/setup-lua@v1
+    #  with:
+    #    luaVersion: '5.4'
       
     - name: Setup CMake
       uses: jwlawson/actions-setup-cmake@v2
       with:
-        cmake-version: '4.1.0' # Specify the version you need
+        cmake-version: '4.1.0'
 
     - name: Install Full Vulkan SDK (Provides glslc for Windows)
       if: runner.os == 'Windows'
@@ -70,6 +67,7 @@ jobs:
       with:
         version: latest
         cache: true
+
     - name: Install Dependancies
       if: runner.os == 'Linux'
       run: |
@@ -82,11 +80,15 @@ jobs:
           libxi-dev \
           libxss-dev \
           libxxf86vm-dev \
+          libxtst-dev \
           libwayland-dev \
           libxkbcommon-dev \
           wayland-protocols \
+          libwayland-bin \
           luajit \
+          libluajit-5.1-dev \
           glslc
+
     - name: Prepare Vulkan SDK
       uses: humbletim/setup-vulkan-sdk@v1.2.1
       with:
@@ -96,6 +98,7 @@ jobs:
     - uses: actions/checkout@v4
       with:
         submodules: 'recursive'
+        
     - name: Set reusable strings
       # Turn repeated input strings (such as the build output directory) into step outputs. These step outputs can be used throughout the workflow file.
       id: strings
