@@ -30,7 +30,7 @@ set(USE_LUAJIT 0 CACHE BOOL "Enable LuaJIT scripting" FORCE)
 set(LUA_LIBS "" CACHE STRING "Lua libraries to link" FORCE)
 set(LUA_INCLUDE "" CACHE STRING "Lua include directory" FORCE)
 set(LUA_BUILD_EXE 0 CACHE BOOL "Build Lua executable" FORCE)
-set(LUAJIT_BUILD_EXE 0 CACHE BOOL "Build LuaJIT executable" FORCE)
+set(LUAJIT_BUILD_EXE 1 CACHE BOOL "Build LuaJIT executable" FORCE)
 
 set(LUAJIT_CMAKE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/luajit-cmake")
 set(LUAJIT_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/LuaJIT")
@@ -76,8 +76,6 @@ set_target_properties(imgui PROPERTIES PREFIX "")
 
 # CIMGUI
 project(cimgui LANGUAGES C CXX)
-
-#include(cimgui/backend_test/cmake/GenerateCimguiBindings.cmake)
 
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
