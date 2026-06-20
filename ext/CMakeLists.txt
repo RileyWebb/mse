@@ -87,24 +87,27 @@ string(FIND "${cimgui_impl}" CIMGUI_USE_SDL3 rendbk_position)
 string(FIND "${cimgui_impl}" CIMGUI_USE_SDLGPU3 platbk_position)
 # If we don't find it, rendbk_position will be -1
 if(rendbk_position EQUAL -1 OR platbk_position EQUAL -1)
-    # get compiler name
+    # Get compiler name
     cmake_path(GET CMAKE_C_COMPILER FILENAME C_COMP)
     cmake_path(REMOVE_EXTENSION C_COMP)
+
+    set(GENERATOR_DIR "${CMAKE_CURRENT_SOURCE_DIR}/cimgui/generator")
     
-    # get includes string
-    execute_process(
-        # Use the built target file path dynamically instead of a host command
-        COMMAND $<TARGET_FILE:luajit> generator.lua ${C_COMP} "internal noimstrv" sdl3 sdlgpu3 "-I${CMAKE_CURRENT_SOURCE_DIR}/SDL/include"
-        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/cimgui/generator
-        ERROR_VARIABLE error_command
-        RESULT_VARIABLE build_command_result
-        COMMAND_EXPAND_LISTS # Ensures generator expressions are resolved properly
+    # Define the generated output files so CMake tracks dependencies
+    set(GENERATED_BINDINGS
+        "${CMAKE_CURRENT_SOURCE_DIR}/cimgui/cimgui.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/cimgui/cimgui_impl.cpp"
     )
-    if(NOT ${build_command_result} EQUAL 0)
-        message(STATUS "cimgui generation failed: Do you have LuaJIT?")
-        message(STATUS "cimgui generation failed: ${build_command_result}")
-        message(STATUS "error_command: ${error_command}")
-    endif()
+
+    # Trigger generation during the build stage, AFTER luajit target is ready
+    add_custom_command(
+        OUTPUT ${GENERATED_BINDINGS}
+        COMMAND $<TARGET_FILE:luajit> generator.lua ${C_COMP} "internal noimstrv" sdl3 sdlgpu3 "-I${CMAKE_CURRENT_SOURCE_DIR}/SDL/include"
+        WORKING_DIRECTORY "${GENERATOR_DIR}"
+        DEPENDS luajit
+        COMMENT "Generating cimgui bindings using internal LuaJIT..."
+        VERBATIM
+    )
 endif()
 
 add_library(cimgui SHARED 
