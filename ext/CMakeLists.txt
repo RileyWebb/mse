@@ -60,7 +60,7 @@ set_target_properties(imgui PROPERTIES PREFIX "")
 # CIMGUI
 project(cimgui LANGUAGES C CXX)
 
-include(cimgui/backend_test/cmake/GenerateCimguiBindings.cmake)
+#include(cimgui/backend_test/cmake/GenerateCimguiBindings.cmake)
 
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -112,7 +112,7 @@ endif()
 
 target_compile_definitions(cimgui PUBLIC IMGUI_USE_WCHAR32)
 
-target_link_libraries(cimgui PUBLIC imgui)
+target_link_libraries(cimgui PUBLIC imgui SDL3-shared)
 target_link_libraries(cimgui PRIVATE stdc++ m)
 
 set_target_properties(cimgui PROPERTIES PREFIX "")
@@ -135,7 +135,7 @@ target_include_directories(cimplot PUBLIC cimplot)
 target_include_directories(cimplot PUBLIC cimgui)
 target_include_directories(cimplot PRIVATE cimgui/imgui)
 
-target_link_libraries(cimplot PUBLIC cimgui imgui)
+target_link_libraries(cimplot PUBLIC cimgui imgui SDL3-shared)
 
 set_target_properties(cimplot PROPERTIES PREFIX "")
 
