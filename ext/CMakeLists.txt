@@ -25,6 +25,23 @@ add_subdirectory(minizip-ng EXCLUDE_FROM_ALL)
 #    message(WARNING "stb headers not found at ext/stb; stb target provides no include path")
 #endif()
 
+# LUA / LUAJIT
+set(USE_LUAJIT 0 CACHE BOOL "Enable LuaJIT scripting" FORCE)
+set(LUA_LIBS "" CACHE STRING "Lua libraries to link" FORCE)
+set(LUA_INCLUDE "" CACHE STRING "Lua include directory" FORCE)
+set(LUA_BUILD_EXE 0 CACHE BOOL "Build Lua executable" FORCE)
+set(LUAJIT_BUILD_EXE 0 CACHE BOOL "Build LuaJIT executable" FORCE)
+
+set(LUAJIT_CMAKE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/luajit-cmake")
+set(LUAJIT_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/LuaJIT")
+
+message(STATUS "Building LuaJIT from subprojects: ext/luajit-cmake + ext/LuaJIT")
+set(LUAJIT_DIR "${LUAJIT_SOURCE_DIR}" CACHE PATH "LuaJIT source root" FORCE)
+add_subdirectory(luajit-cmake)
+set(USE_LUAJIT 1 CACHE BOOL "Enable LuaJIT scripting" FORCE)
+set(LUA_LIBS luajit::lib CACHE STRING "Lua libraries to link" FORCE)
+set(LUA_INCLUDE "${LUAJIT_SOURCE_DIR}/src" CACHE STRING "Lua include directory" FORCE)
+
 # IMGUI
 project(imgui LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 11)
@@ -70,15 +87,18 @@ string(FIND "${cimgui_impl}" CIMGUI_USE_SDL3 rendbk_position)
 string(FIND "${cimgui_impl}" CIMGUI_USE_SDLGPU3 platbk_position)
 # If we don't find it, rendbk_position will be -1
 if(rendbk_position EQUAL -1 OR platbk_position EQUAL -1)
-    #get compiler name
+    # get compiler name
     cmake_path(GET CMAKE_C_COMPILER FILENAME C_COMP)
     cmake_path(REMOVE_EXTENSION C_COMP)
-    #get includes string
+    
+    # get includes string
     execute_process(
-    COMMAND luajit generator.lua ${C_COMP} "internal noimstrv" sdl3 sdlgpu3 "-I${CMAKE_CURRENT_SOURCE_DIR}/SDL/include"
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/cimgui/generator
-    ERROR_VARIABLE error_command
-    RESULT_VARIABLE build_command_result
+        # Use the built target file path dynamically instead of a host command
+        COMMAND $<TARGET_FILE:luajit> generator.lua ${C_COMP} "internal noimstrv" sdl3 sdlgpu3 "-I${CMAKE_CURRENT_SOURCE_DIR}/SDL/include"
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/cimgui/generator
+        ERROR_VARIABLE error_command
+        RESULT_VARIABLE build_command_result
+        COMMAND_EXPAND_LISTS # Ensures generator expressions are resolved properly
     )
     if(NOT ${build_command_result} EQUAL 0)
         message(STATUS "cimgui generation failed: Do you have LuaJIT?")
@@ -138,20 +158,3 @@ target_include_directories(cimplot PRIVATE cimgui/imgui)
 target_link_libraries(cimplot PUBLIC cimgui imgui SDL3-shared)
 
 set_target_properties(cimplot PROPERTIES PREFIX "")
-
-# LUA / LUAJIT
-set(USE_LUAJIT 0 CACHE BOOL "Enable LuaJIT scripting" FORCE)
-set(LUA_LIBS "" CACHE STRING "Lua libraries to link" FORCE)
-set(LUA_INCLUDE "" CACHE STRING "Lua include directory" FORCE)
-set(LUA_BUILD_EXE 0 CACHE BOOL "Build Lua executable" FORCE)
-set(LUAJIT_BUILD_EXE 0 CACHE BOOL "Build LuaJIT executable" FORCE)
-
-set(LUAJIT_CMAKE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/luajit-cmake")
-set(LUAJIT_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/LuaJIT")
-
-message(STATUS "Building LuaJIT from subprojects: ext/luajit-cmake + ext/LuaJIT")
-set(LUAJIT_DIR "${LUAJIT_SOURCE_DIR}" CACHE PATH "LuaJIT source root" FORCE)
-add_subdirectory(luajit-cmake)
-set(USE_LUAJIT 1 CACHE BOOL "Enable LuaJIT scripting" FORCE)
-set(LUA_LIBS luajit::lib CACHE STRING "Lua libraries to link" FORCE)
-set(LUA_INCLUDE "${LUAJIT_SOURCE_DIR}/src" CACHE STRING "Lua include directory" FORCE)
