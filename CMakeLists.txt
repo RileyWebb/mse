@@ -6,11 +6,6 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin)
 
 enable_testing()
 
-if(MINGW)
-    add_link_options(-static-libgcc -static-libstdc++)
-    add_link_options(-Wl,-Bstatic -lpthread -Wl,-Bdynamic)
-endif()
-
 add_subdirectory(ext)
 #add_subdirectory(examples/test_backend)
 add_subdirectory(backends/cnes)
@@ -30,6 +25,23 @@ add_custom_target(copy_data
     ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/data/)
 
 add_dependencies(mse copy_info copy_data)
+
+if(MINGW)
+    get_filename_component(MINGW_BIN_DIR ${CMAKE_CXX_COMPILER} DIRECTORY)
+
+    set(MINGW_RUNTIME_DLLS
+        "${MINGW_BIN_DIR}/libstdc++-6.dll"
+        "${MINGW_BIN_DIR}/libgcc_s_seh-1.dll"
+        "${MINGW_BIN_DIR}/libwinpthread-1.dll"
+    )
+
+    add_custom_command(TARGET mse POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different 
+            ${MINGW_RUNTIME_DLLS}
+            $<TARGET_FILE_DIR:mse>
+        COMMENT "Copying MinGW runtime DLLs to output directory"
+    )
+endif()
 
 # IGNORE AFTER THIS WIP
 #find_program(GLSLC_EXECUTABLE glslc)
