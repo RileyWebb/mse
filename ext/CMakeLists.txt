@@ -59,6 +59,9 @@ set_target_properties(imgui PROPERTIES PREFIX "")
 
 # CIMGUI
 project(cimgui LANGUAGES C CXX)
+
+include(cimgui/backend_test/cmake/GenerateCimguiBindings.cmake)
+
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 file(READ cimgui/cimgui_impl.h cimgui_impl)
