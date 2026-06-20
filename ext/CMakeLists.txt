@@ -41,7 +41,7 @@ add_library(imgui SHARED ${IMGUI_SOURCES})
 
 target_include_directories(imgui PUBLIC cimgui/imgui)
 target_include_directories(imgui PUBLIC cimgui/imgui/backends)
-target_include_directories(imgui PUBLIC sdl/include)
+target_include_directories(imgui PUBLIC SDL/include)
 
 if (WIN32)
     target_link_libraries(imgui PRIVATE imm32)
@@ -75,7 +75,7 @@ if(rendbk_position EQUAL -1 OR platbk_position EQUAL -1)
     cmake_path(REMOVE_EXTENSION C_COMP)
     #get includes string
     execute_process(
-    COMMAND luajit generator.lua ${C_COMP} "internal noimstrv" sdl3 sdlgpu3 "-I${CMAKE_CURRENT_SOURCE_DIR}/sdl/include"
+    COMMAND luajit generator.lua ${C_COMP} "internal noimstrv" sdl3 sdlgpu3 "-I${CMAKE_CURRENT_SOURCE_DIR}/SDL/include"
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/cimgui/generator
     ERROR_VARIABLE error_command
     RESULT_VARIABLE build_command_result
