@@ -6,9 +6,9 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin)
 
 enable_testing()
 
-if(WIN32)
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -shared-libgcc -shared-libstdc++")
-    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -shared-libstdc++")
+if(MINGW)
+    add_link_options(-static-libgcc -static-libstdc++)
+    add_link_options(-Wl,-Bstatic -lpthread -Wl,-Bdynamic)
 endif()
 
 add_subdirectory(ext)
