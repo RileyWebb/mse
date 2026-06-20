@@ -44,6 +44,13 @@ struct mse_gfx_pipeline_s {
     SDL_GPUGraphicsPipeline *pipeline;
 };
 
+mse_frontend_context_t g_app_ctx = {0};
+
+void mse_frontend_quit() 
+{
+    g_app_ctx.is_running = false;
+}
+
 static float mse_frontend_clamp01(float value) {
     if (value < 0.0f) return 0.0f;
     if (value > 1.0f) return 1.0f;
@@ -62,6 +69,7 @@ int g_gpu_driver_count;
 SDL_DisplayID g_last_display_id = 0;
 bool g_gpu_drivers_cached = false;
 bool g_gpu_devices_cached = false;
+bool g_running = false;
 
 static void mse_frontend_ui_cache_sdl_settings(SDL_Window *window)
 {
@@ -353,10 +361,6 @@ static void mse_frontend_backend_emulation_draw(mse_frontend_backend_preview_t *
     igEnd();
 }
 
-static void mse_frontend_log_sdl_error(const char *message) {
-    DEBUG_ERROR("%s: %s\n", message, SDL_GetError());
-}
-
 static SDL_Window *mse_frontend_create_window(const mse_frontend_app_config_t *config, float *content_scale_out) {
     float content_scale = SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
     if (content_scale <= 0.0f) {
@@ -425,9 +429,9 @@ static bool mse_frontend_claim_swapchain(SDL_GPUDevice *device, SDL_Window *wind
 }
 
 static bool mse_frontend_set_swapchain_present_mode(SDL_GPUDevice *device, SDL_Window *window, SDL_GPUPresentMode present_mode) {
-    if (!SDL_SetGPUSwapchainParameters(device, window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, present_mode)) {
+    if (!SDL_SetGPUSwapchainParameters(device, window, g_app_ctx.swapchain_composition, present_mode)) {
         if (present_mode != SDL_GPU_PRESENTMODE_VSYNC) {
-            if (!SDL_SetGPUSwapchainParameters(device, window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, SDL_GPU_PRESENTMODE_VSYNC)) {
+            if (!SDL_SetGPUSwapchainParameters(device, window, g_app_ctx.swapchain_composition, SDL_GPU_PRESENTMODE_VSYNC)) {
                 return false;
             }
         } else {
@@ -449,22 +453,26 @@ FILE *mse_register_log_file()
 	return f_log;
 }
 
-
 int mse_frontend_run(const mse_frontend_app_config_t *config) {
     FILE *log_file = mse_register_log_file();
     libmse_debug_register_buffer(log_file);
 
+    const char *config_file = "config.cfg";
+    if (!libmse_cmd_execute("exec", 1, &config_file)) {
+        DEBUG_ERROR("Failed to parse config.cfg");
+    }
+
     SDL_SetHint("SDL_IME_SHOW_UI", "1");
 
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO | SDL_INIT_JOYSTICK | SDL_INIT_HAPTIC)) {
-        mse_frontend_log_sdl_error("Failed to initialize SDL");
+        DEBUG_ERROR("Failed to initialize SDL: %s", SDL_GetError());
         return 1;
     }
 
     float content_scale = 1.0f;
     SDL_Window *window = mse_frontend_create_window(config, &content_scale);
     if (window == NULL) {
-        mse_frontend_log_sdl_error("Failed to create window");
+        DEBUG_ERROR("Failed to create window: %s", SDL_GetError());
         SDL_Quit();
         return 1;
     }
@@ -473,11 +481,17 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
 
     SDL_GPUDevice *device = mse_frontend_create_gpu_device();
     if (device == NULL) {
-        mse_frontend_log_sdl_error("Failed to create GPU device");
+        DEBUG_ERROR("Failed to create GPU device: %s", SDL_GetError());
         SDL_DestroyWindow(window);
         SDL_Quit();
         return 1;
     }
+
+    g_app_ctx.window = window;
+    g_app_ctx.gpu_device = device;
+    g_app_ctx.content_scale = content_scale;
+    g_app_ctx.is_running = true;
+    g_app_ctx.swapchain_composition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
 
     mse_gfx_init(device);
 
@@ -485,28 +499,26 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
     mse_frontend_terminal_init();
 
     if (!SDL_SetGPUAllowedFramesInFlight(device, 3)) {
-        mse_frontend_log_sdl_error("Failed to raise GPU frames in flight");
+        DEBUG_ERROR("Failed to raise GPU frames in flight: %s", SDL_GetError());
     }
 
     if (!mse_frontend_claim_swapchain(device, window)) {
-        mse_frontend_log_sdl_error("Failed to claim window for GPU device");
+        DEBUG_ERROR("Failed to claim window for GPU device: %s", SDL_GetError());
         SDL_DestroyGPUDevice(device);
         SDL_DestroyWindow(window);
         SDL_Quit();
         return 1;
     }
 
-    const SDL_GPUPresentMode present_mode = mse_frontend_choose_present_mode(device, window);
-    if (!mse_frontend_set_swapchain_present_mode(device, window, present_mode)) {
-        mse_frontend_log_sdl_error("Failed to set swapchain parameters");
+    g_app_ctx.presentation_mode = mse_frontend_choose_present_mode(device, window);
+    if (!mse_frontend_set_swapchain_present_mode(device, window, g_app_ctx.presentation_mode)) {
+        DEBUG_ERROR("Failed to set swapchain parameters: %s", SDL_GetError());
         SDL_ReleaseWindowFromGPUDevice(device, window);
         SDL_DestroyGPUDevice(device);
         SDL_DestroyWindow(window);
         SDL_Quit();
         return 1;
     }
-
-    const SDL_GPUPresentMode viewport_present_mode = mse_frontend_choose_viewport_present_mode(device, window, present_mode);
 
     SDL_GPUTextureFormat swapchain_format = SDL_GetGPUSwapchainTextureFormat(device, window);
 
@@ -516,12 +528,12 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
     imgui_config.device = device;
     imgui_config.swapchain_format = swapchain_format;
     imgui_config.msaa_samples = SDL_GPU_SAMPLECOUNT_1;
-    imgui_config.swapchain_composition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
-    imgui_config.present_mode = viewport_present_mode;
+    imgui_config.swapchain_composition = g_app_ctx.swapchain_composition;
+    imgui_config.present_mode = g_app_ctx.presentation_mode;
     imgui_config.content_scale = content_scale;
 
     if (!mse_frontend_imgui_initialize(&imgui_backend, &imgui_config)) {
-        mse_frontend_log_sdl_error("Failed to initialize ImGui");
+        DEBUG_ERROR("Failed to initialize ImGui: %s", SDL_GetError());
         SDL_ReleaseWindowFromGPUDevice(device, window);
         SDL_DestroyGPUDevice(device);
         SDL_DestroyWindow(window);
@@ -573,8 +585,8 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
     ui_state.selected_core_index = backend_count > 0 ? 0 : -1;
     DEBUG_INFO("Frontend initialized");
 
-    bool running = true;
-    while (running) {
+    g_app_ctx.is_running = true;
+    while (g_app_ctx.is_running) {
         Uint64 now_ticks = SDL_GetTicksNS();
         float delta_seconds = (now_ticks >= last_frame_ticks) ? ((float)(now_ticks - last_frame_ticks) / 1000000000.0f) : 0.0f;
         if (delta_seconds > 0.1f) {
@@ -610,9 +622,9 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
             }
 
             if (event.type == SDL_EVENT_QUIT) {
-                running = false;
+                g_app_ctx.is_running = false;
             } else if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event.window.windowID == SDL_GetWindowID(window)) {
-                running = false;
+                g_app_ctx.is_running = false;
             } else if (event.type == SDL_EVENT_GAMEPAD_ADDED) {
                 mse_frontend_input_on_gamepad_added(input_manager, (int)event.gdevice.which);
             } else if (event.type == SDL_EVENT_GAMEPAD_REMOVED) {
@@ -682,16 +694,16 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
 
         SDL_GPUCommandBuffer *command_buffer = SDL_AcquireGPUCommandBuffer(device);
         if (command_buffer == NULL) {
-            mse_frontend_log_sdl_error("Failed to acquire GPU command buffer");
+            DEBUG_ERROR("Failed to acquire GPU command buffer: %s", SDL_GetError());
             continue;
         }
+
+        mse_frontend_imgui_prepare_draw_data(command_buffer);
 
         SDL_GPUTexture *swapchain_texture = NULL;
         SDL_AcquireGPUSwapchainTexture(command_buffer, window, &swapchain_texture, NULL, NULL);
 
         if (swapchain_texture != NULL) {
-            mse_frontend_imgui_prepare_draw_data(command_buffer);
-
             SDL_GPUColorTargetInfo color_target_info;
             color_target_info.texture = swapchain_texture;
             color_target_info.mip_level = 0;
@@ -718,16 +730,19 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
             }
         }
 
+        SDL_SubmitGPUCommandBuffer(command_buffer);
+
         if (render_viewports) {
             igUpdatePlatformWindows();
             igRenderPlatformWindowsDefault(NULL, NULL);
         }
-
-        SDL_SubmitGPUCommandBuffer(command_buffer);
     }
 
     SDL_WaitForGPUIdle(device);
     
+    if (!libmse_cvar_export("config.cfg"))
+        DEBUG_ERROR("Failed to export config.cfg");
+
     mse_frontend_input_manager_destroy(input_manager);
     
     mse_frontend_backend_preview_shutdown(&backend_preview);
@@ -740,8 +755,10 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
     SDL_DestroyWindow(window);
     SDL_Quit();
 
-    libmse_debug_flush_all();
-    fclose(log_file);
+    if (log_file) {
+        libmse_debug_flush_all();
+        fclose(log_file);
+    }
 
     return 0;
 }

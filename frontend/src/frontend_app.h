@@ -1,6 +1,7 @@
 #ifndef MSE_FRONTEND_APP_H
 #define MSE_FRONTEND_APP_H
 
+#include <SDL3/SDL.h>
 #include <stdbool.h>
 
 typedef struct mse_frontend_app_config_s {
@@ -11,7 +12,22 @@ typedef struct mse_frontend_app_config_s {
     bool high_pixel_density;
 } mse_frontend_app_config_t;
 
+typedef struct mse_frontend_context_s {
+    SDL_Window *window;
+    SDL_GPUDevice *gpu_device;
+    SDL_GPUPresentMode presentation_mode;
+    SDL_GPUSwapchainComposition swapchain_composition;
+    float content_scale;
+    bool is_running;
+} mse_frontend_context_t;
+
+extern mse_frontend_context_t g_app_ctx;
+
 int mse_frontend_run(const mse_frontend_app_config_t *config);
+void mse_frontend_quit();
+
+int mse_frontend_run(const mse_frontend_app_config_t *config);
+void mse_frontend_quit();
 
 extern char g_video_resolutions_buf[64][64];
 extern const char* g_video_resolutions[64];

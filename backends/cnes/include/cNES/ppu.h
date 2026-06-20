@@ -124,6 +124,8 @@ typedef struct PPU {
 
     // Cartridge and System Configuration
     MirrorMode mirror_mode; // Nametable mirroring mode set by cartridge
+    
+    uint32_t active_palette[64]; // Active 64-color palette derived from the base NES palette and PPUMASK emphasis bits
 
     // Output
     uint32_t *framebuffer;

@@ -45,6 +45,8 @@ typedef struct CPU {
 
     uint64_t total_cycles;
 
+    bool nmi_pending;
+
     NES* nes; // Pointer to the NES instance
 } CPU;
 

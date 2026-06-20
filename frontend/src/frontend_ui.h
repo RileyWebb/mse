@@ -7,6 +7,7 @@
 
 #include <SDL3/SDL_events.h>
 #include <SDL3/SDL_video.h>
+#include <SDL3/SDL_gpu.h>
 
 #include "frontend_theme.h"
 
@@ -66,8 +67,6 @@ typedef struct mse_frontend_ui_state_s {
 
     float audio_volume;
     bool audio_mute;
-
-    int video_present_mode;
 
     char rom_path[PATH_MAX];
 } mse_frontend_ui_state_t;

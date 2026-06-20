@@ -69,7 +69,7 @@ static inline uint16_t CPU_ADDR_IMP(CPU *cpu, bool *page_crossed)
     (void)cpu;
 
     *page_crossed = false;
-    return 0;
+    return cpu->pc;
 }
 
 static inline uint16_t CPU_ADDR_ACC(CPU *cpu, bool *page_crossed)
@@ -736,8 +736,9 @@ static void CPU_OP_TYA(CPU *cpu, uint16_t address, uint8_t *cycles_ref)
 static void CPU_OP_NOP(CPU *cpu, uint16_t address, uint8_t *cycles_ref)
 {
     (void)cpu;
-    (void)address;
     (void)cycles_ref;
+
+    BUS_Read(cpu->nes, address);
 }
 
 // Unofficial Opcodes
@@ -1308,6 +1309,7 @@ void CPU_Reset(CPU *cpu)
     cpu->sp           = 0xFD;
     cpu->status       = CPU_FLAG_UNUSED | CPU_FLAG_INTERRUPT;
     cpu->total_cycles = 0;
+    cpu->nmi_pending  = false;
 }
 
 void CPU_Destroy(CPU *cpu)
@@ -1317,6 +1319,12 @@ void CPU_Destroy(CPU *cpu)
 
 int CPU_Step(CPU *cpu)
 {
+    if (cpu->nmi_pending) {
+        cpu->nmi_pending = false;
+        CPU_NMI(cpu);
+        return 7; // Vectoring to an interrupt takes 7 cycles
+    }
+
     uint8_t                opcode = BUS_Read(cpu->nes, cpu->pc++);
     const CPU_Instruction *inst   = &instructions[opcode];
 
@@ -1329,6 +1337,8 @@ int CPU_Step(CPU *cpu)
     if (page_crossed_by_addr && inst->add_cycles_on_page_cross) {
         BUS_Read(cpu->nes, effective_address - 0x0100); // Dummy Read
     }
+
+    cpu->nmi_pending = cpu->nes->ppu->nmi_interrupt_line; 
 
     inst->operation(cpu, effective_address, &current_opcode_cycles);
 

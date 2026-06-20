@@ -4,9 +4,11 @@
 #include "frontend_cimgui.h"
 #include "frontend_imgui.h"
 #include "frontend_icons.h"
+#include "frontend_app.h"
 #include "libmse/libmse_debug.h"
 #include "libmse/libmse.h"
 #include "libmse/libmse_version.h"
+#include "libmse/libmse_cvar.h"
 #include "cimgui_markdown.h"
 #include <SDL3/SDL_dialog.h>
 #include <math.h>
@@ -875,6 +877,40 @@ static void mse_frontend_ui_ensure_dock_layout(ImGuiViewport *viewport)
 	g_frontend_dock_layout_built = true;
 }
 
+static void mse_cvar_fullscreen_cb(libmse_cvar_t *cvar, void *user_data) { 
+	if (cvar == NULL) return;
+
+	mse_frontend_ui_state_t *state = (mse_frontend_ui_state_t *)user_data;
+	if (state == NULL || state->window == NULL) return;
+
+	SDL_SetWindowFullscreen(state->window, *cvar->data.i);
+}
+
+static void mse_cvar_presentation_mode_cb(libmse_cvar_t *cvar, void *user_data) {
+	if (cvar == NULL) return;
+
+	if (!SDL_WindowSupportsGPUPresentMode(g_app_ctx.gpu_device, g_app_ctx.window, *cvar->data.i))
+	{
+		DEBUG_ERROR("Presentation mode %d is not supported on this platform, falling back to VSync", *cvar->data.i);
+		g_app_ctx.presentation_mode = SDL_GPU_PRESENTMODE_VSYNC;
+		return;
+	}
+	
+	if (!SDL_SetGPUSwapchainParameters(g_app_ctx.gpu_device, g_app_ctx.window, g_app_ctx.swapchain_composition, g_app_ctx.presentation_mode))
+		DEBUG_ERROR("Failed to update swapchain parameters: %s", SDL_GetError());
+}
+
+static void mse_frontend_register_cvars(mse_frontend_ui_state_t *state) 
+{
+	libmse_cvar_register("mse_fullscreen", LIBMSE_CVAR_INT, (void *)&state->fullscreen, "Current fullscreen state (0 = windowed, 1 = fullscreen)");
+	libmse_cvar_register_change_cb("mse_fullscreen", mse_cvar_fullscreen_cb, (void *)state);
+
+	libmse_cvar_register("mse_presentation_mode", LIBMSE_CVAR_INT, (void *)&g_app_ctx.presentation_mode, "Presentation mode (0 = VSync, 1 = Immediate, 2 = Mailbox)");
+	libmse_cvar_register_change_cb("mse_presentation_mode", mse_cvar_presentation_mode_cb, NULL);
+
+	libmse_cvar_register("mse_content_scale", LIBMSE_CVAR_FLOAT, (void *)&state->content_scale, "UI content scale factor");
+}
+
 static float mse_frontend_ui_status_bar_height(void)
 {
 	const float		  text_size = mse_frontend_imgui_font_size_small();
@@ -1002,9 +1038,7 @@ void mse_frontend_ui_init(mse_frontend_ui_state_t *state)
 		}
 	}
 
-	if (!g_frontend_log_callback_registered) {
-		g_frontend_log_callback_registered = (libmse_debug_register_callback(mse_frontend_terminal_log_callback) == 0);
-	}
+	mse_frontend_register_cvars(state);
 }
 
 void mse_frontend_ui_draw(mse_frontend_ui_state_t *state)

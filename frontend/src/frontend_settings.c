@@ -175,7 +175,7 @@ void mse_frontend_ui_draw_settings_modal(mse_frontend_ui_state_t *state)
 			
 			// SDL_GPU specifically maps to these 3 swapchain present modes
 			const char* present_modes[] = { "VSync (FIFO)", "Immediate (Uncapped)", "Mailbox (Fast VSync)" };
-			igCombo_Str_arr("Present Mode", &state->video_present_mode, present_modes, 3, 3);
+			igCombo_Str_arr("Present Mode", (int*)&g_app_ctx.presentation_mode, present_modes, 3, 3);
 			
 			// Uses the dynamically cached driver backends compiled into SDL3
 			igCombo_Str_arr("Graphics Backend", /*&state->video_graphics_device*/ &temp, g_gpu_drivers, g_gpu_driver_count, 3);

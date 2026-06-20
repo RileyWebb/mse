@@ -10,6 +10,7 @@
 #include "libmse/libmse_cvar.h"
 #include "libmse/libmse_cmd.h"
 #include "libmse/libmse_debug.h"
+#include "frontend_app.h"
 
 #define MAX_TERMINAL_HISTORY 512
 #define MAX_COMMAND_HISTORY 64
@@ -25,6 +26,12 @@
 #define COLOR_BG (ImVec4){0.0745098039f, 0.0745098039f, 0.0745098039f, 1.0f}
 
 typedef struct {
+    FILE *stream;       // The FILE handle you write to
+    char *buffer;       // Pointer to the raw allocated string block
+    size_t size;        // Current length of the text inside the buffer
+} MemConsole;
+
+typedef struct {
 	char   text[256];
 	ImVec4 color;
 } TerminalLine;
@@ -36,6 +43,8 @@ typedef struct {
 	const char *last_match;
 	bool		print_mode;
 } AutocompleteState;
+
+static MemConsole g_mem_console = {0};
 
 // Output display state
 static TerminalLine g_terminal_history[MAX_TERMINAL_HISTORY];
@@ -49,6 +58,130 @@ static char	  g_command_history[MAX_COMMAND_HISTORY][INPUT_BUFFER_SIZE];
 static size_t g_command_history_count				   = 0;
 static int	  g_command_history_pos					   = -1;
 static char	  g_command_temp_buffer[INPUT_BUFFER_SIZE] = "";
+
+static void get_ansi_16_color(int code, bool intense, int *r, int *g, int *b) {
+    int base = intense ? 255 : 170;
+    int low  = intense ? 85  : 0;
+
+    switch (code % 10) {
+        case 0: *r = low;  *g = low;  *b = low;  break; // Black / Dark Gray
+        case 1: *r = base; *g = low;  *b = low;  break; // Red
+        case 2: *r = low;  *g = base; *b = low;  break; // Green
+        case 3: *r = base; *g = base; *b = low;  break; // Yellow
+        case 4: *r = low;  *g = low;  *b = base; break; // Blue
+        case 5: *r = base; *g = low;  *b = base; break; // Magenta
+        case 6: *r = low;  *g = base; *b = base; break; // Cyan
+        case 7: *r = base; *g = base; *b = base; break; // White
+        default: *r = 255; *g = 255; *b = 255; break;
+    }
+}
+
+const char* ansi_color_parser(const char* start, const char* end, ImVec4 *color)
+{
+    if (!start || !end || start >= end)
+        return end;
+
+    // 1. Check for the ANSI Escape sequence prefix: '\033[' or '\x1b['
+    if (start[0] != '\033' || (start + 1 >= end) || start[1] != '[') {
+        return start + 1; // Not an ANSI escape code, advance 1 char
+    }
+
+    const char *p = start + 2; // Move past '\033['
+
+    // Keep track of text attributes
+    bool intense = false;
+    int r = 255, g = 255, b = 255; // Default fallback to white
+    bool color_changed = false;
+
+    // 2. Parse semicolon-separated integer parameters
+    while (p < end && *p != 'm') {
+        // Skip semicolons or unexpected characters
+        if (*p == ';' || *p == ' ') {
+            p++;
+            continue;
+        }
+
+        // Read the next integer parameter
+        if (*p >= '0' && *p <= '9') {
+            char *next_p;
+            int param = (int)strtol(p, &next_p, 10);
+            p = next_p;
+
+            // 3. Handle standard SGR commands
+            if (param == 0) {
+                // Reset everything
+                intense = false;
+                r = 255; g = 255; b = 255;
+                color_changed = true;
+            } 
+            else if (param == 1) {
+                // Bold / Intense modifier
+                intense = true;
+            } 
+            else if (param >= 30 && param <= 37) {
+                // Foreground standard 8 colors
+                get_ansi_16_color(param, intense, &r, &g, &b);
+                color_changed = true;
+            } 
+            else if (param >= 90 && param <= 97) {
+                // Foreground high-intensity 8 colors
+                get_ansi_16_color(param, true, &r, &g, &b);
+                color_changed = true;
+            }
+            // Note: You can add param == 39 to reset to default terminal color
+        } else {
+            // Unrecognized character inside the code block, abort to avoid infinite loop
+            break;
+        }
+    }
+
+    // Advance past the trailing command character 'm' if we hit it safely
+    if (p < end && *p == 'm') {
+        p++;
+    }
+
+    // 4. Update the ImGui color structure if we pulled a valid modification out
+    if (color_changed && color) {
+        *color = (ImVec4){r / 255.0f, g / 255.0f, b / 255.0f, 1.0f};
+    }
+
+    return p; // Return pointer right after 'm'
+}
+
+/*const char* default_color_parser(const char* start, const char* end, ImU32 *color)
+{
+    if (!start || !end || start >= end)
+        return end;
+
+    // 1. Look for the closing "}}" within the bounded range
+    const char *closing_brackets = NULL;
+    for (const char *p = start; p <= end - 2; p++) {
+        if (p[0] == '}' && p[1] == '}') {
+            closing_brackets = p;
+            break;
+        }
+    }
+
+    // 2. Parse the RGB values using sscanf
+    int r = 0, g = 0, b = 0;
+    int items_parsed = sscanf(start, "{{%i;%i;%i}}", &r, &g, &b);
+
+    // 3. Validation: We must find "}}" and have parsed exactly 3 integers successfully
+    if (items_parsed != 3 || !closing_brackets) {
+        if (!closing_brackets) {
+            return end;
+        }
+        return closing_brackets + 2; // Skip past the invalid formatting block
+    }
+
+    // 4. Convert and assign the color (Using ImGui's C API equivalents)
+    ImColor im_color = ImColor_ImColor_Int(r, g, b, 255); 
+    if (color) {
+        *color = ImGui_ColorConvertFloat4ToU32(im_color.Value);
+    }
+
+    return closing_brackets + 2; // Return pointer right after "}}"
+}*/
 
 static ImVec4 mse_frontend_ui_log_level_color(DEBUG_LOG_LEVEL level)
 {
@@ -104,34 +237,27 @@ static void terminal_push_command_history(const char *cmd)
 	g_command_history_count++;
 }
 
-// ---------------------------------------------------------
-// DYNAMIC COMMAND HANDLERS
-// ---------------------------------------------------------
-
-static bool cmd_clear_handler(const libmse_cmd_arg_t *args)
+static bool cmd_clear_handler(int argc, const char** argv)
 {
 	g_history_head = 0;
 	g_history_size = 0;
 	return true;
 }
 
-static bool cmd_exit_handler(const libmse_cmd_arg_t *args)
+static bool cmd_exit_handler(int argc, const char** argv)
 {
-	exit(0);
+	mse_frontend_quit();
 	return true;
 }
 
-// You should call this once on frontend initialization!
 void mse_frontend_terminal_init(void)
 {
-	libmse_cmd_register(&(libmse_cmd_t){"clear", "Flushes active history array lines", 0, NULL, cmd_clear_handler});
-	libmse_cmd_register(&(libmse_cmd_t){"exit", "Exits the application immediately", 0, NULL, cmd_exit_handler});
-	libmse_cmd_register(&(libmse_cmd_t){"quit", "Quits the application immediately", 0, NULL, cmd_exit_handler});
-}
+	libmse_debug_register_callback(mse_frontend_terminal_log_callback);
 
-// ---------------------------------------------------------
-// TERMINAL LOGIC
-// ---------------------------------------------------------
+	libmse_cmd_register(&(libmse_cmd_t){"clear", "Flushes active history array lines", 0, cmd_clear_handler});
+	libmse_cmd_register(&(libmse_cmd_t){"exit", "Exits the application immediately", 0, cmd_exit_handler});
+	libmse_cmd_parse("alias quit exit");
+}
 
 static void autocomplete_cvar_callback(libmse_cvar_t *cvar, void *user_data)
 {

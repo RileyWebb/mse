@@ -179,8 +179,6 @@ void NES_Step(NES *nes)
 		}
 	}
 
-	// Step the CPU
-
 	int cpu_cycles = CPU_Step(nes->cpu);
 
 	if (cpu_cycles == -1) {

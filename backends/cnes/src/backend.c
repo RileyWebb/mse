@@ -47,16 +47,16 @@ static char *g_active_rom_path = NULL;
 static mse_gfx_texture_t *g_texture = NULL;
 static mse_gfx_transfer_buffer_t *g_transfer_buffer = NULL;
 
-bool cmd_reset_handler(const libmse_cmd_arg_t* args) {
-	if (g_nes) {
+bool cmd_reset_handler(int argc, const char** argv) {
+	if (g_nes)
 		NES_Reset(g_nes);
-	}
+	
 	return true;
 }
 
-bool cmd_load_palette_handler(const libmse_cmd_arg_t* args) {
-	if (g_nes && args && args[0].s) {
-		uint32_t *new_palette = PALETTE_Load(args[0].s);
+bool cmd_load_palette_handler(int argc, const char** argv) {
+	if (g_nes && argc > 0 && argv[0]) {
+		uint32_t *new_palette = PALETTE_Load(argv[0]);
 		if (new_palette) {
 			PPU_SetPalette(g_nes->ppu, new_palette);
 			PALETTE_Destroy(new_palette);
@@ -100,8 +100,8 @@ static void register_cvars(NES *nes)
 
 static void register_cmds(NES *nes)
 {
-	libmse_cmd_register(&(libmse_cmd_t){"cnes_reset", "Resets the NES emulator state", 0, NULL, cmd_reset_handler});
-	libmse_cmd_register(&(libmse_cmd_t){"cnes_load_palette", "Loads a palette from the specified path", 1, (const libmse_cmd_type_t[]){LIBMSE_CMD_STRING}, cmd_load_palette_handler});
+	libmse_cmd_register(&(libmse_cmd_t){"cnes_reset", "Resets the NES emulator state", 0, cmd_reset_handler});
+	libmse_cmd_register(&(libmse_cmd_t){"cnes_load_palette", "Loads a palette from the specified path", 1, cmd_load_palette_handler});
 	//libmse_cmd_register(&(libmse_cmd_t){"cnes_load_rom", "Loads a ROM from the specified path", 1, (const libmse_cmd_type_t[]){LIBMSE_CMD_STRING}, cmd_load_rom_handler});
 }
 

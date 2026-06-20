@@ -27,6 +27,74 @@
 
 #define PPU_OPEN_BUS_DECAY_MS 750ULL
 
+#ifndef PPU_USE_SIMD_COLOR_EMPHASIS
+static inline uint32_t apply_color_emphasis(const uint32_t* base_color, uint8_t ppu_mask)
+{
+    // Check bits 5, 6, and 7
+    if (!(ppu_mask & 0xE0)) return *base_color;
+
+    uint32_t c = *base_color;
+    
+    // Extract: RGBA layout assumes Red is at LSB
+    float r = (float)(c >> 24 & 0xFF);
+    float g = (float)((c >> 16) & 0xFF);
+    float b = (float)((c >> 8) & 0xFF);
+    uint32_t a = c & 0x000000FF; // Preserve Alpha
+
+    const float f = 0.75f;
+    float r_mult = 1.0f, g_mult = 1.0f, b_mult = 1.0f;
+
+    // Apply attenuation to the channels NOT emphasized
+    if (ppu_mask & PPUMASK_EMPHASIZE_RED)   { g_mult = f; b_mult = f; }
+    if (ppu_mask & PPUMASK_EMPHASIZE_GREEN) { r_mult = f; b_mult = f; }
+    if (ppu_mask & PPUMASK_EMPHASIZE_BLUE)  { r_mult = f; g_mult = f; }
+
+    uint32_t R = (uint32_t)(r * r_mult);
+    uint32_t G = (uint32_t)(g * g_mult);
+    uint32_t B = (uint32_t)(b * b_mult);
+
+    // Reconstruct RGBA
+    return a | (B << 8) | (G << 16) | (R << 24);
+}
+#else  
+static inline uint32_t apply_color_emphasis(const uint32_t* base_color, uint8_t ppu_mask)
+{
+    if (!(ppu_mask & 0xE0)) return *base_color;
+
+    __m128i color_vec = _mm_cvtsi32_si128(*base_color);
+    // Unpack bytes to 16-bit words. Result: [0, Alpha, 0, Blue, 0, Green, 0, Red]
+    color_vec = _mm_unpacklo_epi8(color_vec, _mm_setzero_si128()); 
+
+    const uint16_t atten = 192; // 0.75 * 256
+    uint16_t r_f = 256, g_f = 256, b_f = 256;
+
+    if (ppu_mask & PPUMASK_EMPHASIZE_RED)   { g_f = atten; b_f = atten; }
+    if (ppu_mask & PPUMASK_EMPHASIZE_GREEN) { r_f = atten; b_f = atten; }
+    if (ppu_mask & PPUMASK_EMPHASIZE_BLUE)  { r_f = atten; g_f = atten; }
+
+    // Map factors to match [Alpha, Blue, Green, Red] order
+    // _mm_set_epi16 parameters are (w7, w6, w5, w4, w3, w2, w1, w0)
+    // w0 corresponds to Red, w1 to Green, w2 to Blue, w3 to Alpha
+    __m128i factors = _mm_set_epi16(0, 0, 0, 0, 256, b_f, g_f, r_f);
+
+    color_vec = _mm_mullo_epi16(color_vec, factors);
+    color_vec = _mm_srli_epi16(color_vec, 8); // Shift back to 8-bit range
+    
+    // Pack 16-bit words back to 8-bit bytes (RGBA)
+    color_vec = _mm_packus_epi16(color_vec, _mm_setzero_si128());
+
+    return (uint32_t)_mm_cvtsi128_si32(color_vec);
+}
+#endif // PPU_USE_SIMD_COLOR_EMPHASIS
+
+static inline void ppu_update_active_palette(PPU *ppu)
+{
+    for (int i = 0; i < 64; ++i) {
+        const uint32_t *base_color = &ppu->nes->settings.video.palette[i];
+        ppu->active_palette[i] = apply_color_emphasis(base_color, ppu->mask);
+    }
+}
+
 uint64_t PPU_GetTotalCycles(PPU *ppu) {
     if (!ppu || !ppu->nes) return 0;
     
@@ -95,6 +163,7 @@ static inline void ppu_palette_write(PPU *ppu, uint16_t addr, uint8_t value)
         pal_addr &= 0x0F;
     }
     ppu->palette[pal_addr] = value;
+    ppu_update_active_palette(ppu);
 }
 
 static inline void ppu_update_nmi_line(PPU *ppu)
@@ -214,7 +283,7 @@ static void load_background_tile_data(PPU *ppu)
         0x23C0 | (ppu->vram_addr & 0x0C00) | ((ppu->vram_addr >> 4) & 0x38) | ((ppu->vram_addr >> 2) & 0x07);
     uint8_t at_byte = ppu_read_vram(ppu, at_addr);
 
-    uint8_t shift        = (uint8_t)(((ppu->vram_addr >> 4) & 0x04) | ((ppu->vram_addr >> 2) & 0x02));
+    uint8_t shift = (uint8_t)(((ppu->vram_addr >> 4) & 0x04) | (ppu->vram_addr & 0x02));
     uint8_t palette_bits = (at_byte >> shift) & 0x03;
 
     ppu->bg_at_latch_low  = -((palette_bits & 0x01) != 0);
@@ -271,6 +340,25 @@ static void evaluate_sprites(PPU *ppu)
     ppu->sprite_count_current_scanline = secondary_oam_idx;
 }
 
+static const uint8_t bit_reverse_table[256] = {
+    0x00, 0x80, 0x40, 0xC0, 0x20, 0xA0, 0x60, 0xE0, 0x10, 0x90, 0x50, 0xD0, 0x30, 0xB0, 0x70, 0xF0,
+    0x08, 0x88, 0x48, 0xC8, 0x28, 0xA8, 0x68, 0xE8, 0x18, 0x98, 0x58, 0xD8, 0x38, 0xB8, 0x78, 0xF8,
+    0x04, 0x84, 0x44, 0xC4, 0x24, 0xA4, 0x64, 0xE4, 0x14, 0x94, 0x54, 0xD4, 0x34, 0xB4, 0x74, 0xF4,
+    0x0C, 0x8C, 0x4C, 0xCC, 0x2C, 0xAC, 0x6C, 0xEC, 0x1C, 0x9C, 0x5C, 0xDC, 0x3C, 0xBC, 0x7C, 0xFC,
+    0x02, 0x82, 0x42, 0xC2, 0x22, 0xA2, 0x62, 0xE2, 0x12, 0x92, 0x52, 0xD2, 0x32, 0xB2, 0x72, 0xF2,
+    0x0A, 0x8A, 0x4A, 0xCA, 0x2A, 0xAA, 0x6A, 0xEA, 0x1A, 0x9A, 0x5A, 0xDA, 0x3A, 0xBA, 0x7A, 0xFA,
+    0x06, 0x86, 0x46, 0xC6, 0x26, 0xA6, 0x66, 0xE6, 0x16, 0x96, 0x56, 0xD6, 0x36, 0xB6, 0x76, 0xF6,
+    0x0E, 0x8E, 0x4E, 0xCE, 0x2E, 0xAE, 0x6E, 0xEE, 0x1E, 0x9E, 0x5E, 0xDE, 0x3E, 0xBE, 0x7E, 0xFE,
+    0x01, 0x81, 0x41, 0xC1, 0x21, 0xA1, 0x61, 0xE1, 0x11, 0x91, 0x51, 0xD1, 0x31, 0xB1, 0x71, 0xF1,
+    0x09, 0x89, 0x49, 0xC9, 0x29, 0xA9, 0x69, 0xE9, 0x19, 0x99, 0x59, 0xD9, 0x39, 0xB9, 0x79, 0xF9,
+    0x05, 0x85, 0x45, 0xC5, 0x25, 0xA5, 0x65, 0xE5, 0x15, 0x95, 0x55, 0xD5, 0x35, 0xB5, 0x75, 0xF5,
+    0x0D, 0x8D, 0x4D, 0xCD, 0x2D, 0xAD, 0x6D, 0xED, 0x1D, 0x9D, 0x5D, 0xDD, 0x3D, 0xBD, 0x7D, 0xFD,
+    0x03, 0x83, 0x43, 0xC3, 0x23, 0xA3, 0x63, 0xE3, 0x13, 0x93, 0x53, 0xD3, 0x33, 0xB3, 0x73, 0xF3,
+    0x0B, 0x8B, 0x4B, 0xCB, 0x2B, 0xAB, 0x6B, 0xEB, 0x1B, 0x9B, 0x5B, 0xDB, 0x3B, 0xBB, 0x7B, 0xFB,
+    0x07, 0x87, 0x47, 0xC7, 0x27, 0xA7, 0x67, 0xE7, 0x17, 0x97, 0x57, 0xD7, 0x37, 0xB7, 0x77, 0xF7,
+    0x0F, 0x8F, 0x4F, 0xCF, 0x2F, 0xAF, 0x6F, 0xEF, 0x1F, 0x9F, 0x5F, 0xDF, 0x3F, 0xBF, 0x7F, 0xFF
+};
+
 static void fetch_sprite_patterns(PPU *ppu)
 {
     uint8_t sprite_height = (ppu->ctrl & PPUCTRL_SPRITE_SIZE) ? 16 : 8;
@@ -304,71 +392,20 @@ static void fetch_sprite_patterns(PPU *ppu)
             pattern_addr_base = ((ppu->ctrl & PPUCTRL_SPRITE_TABLE_ADDR) ? 0x1000 : 0x0000) + (tile_id * 16);
         }
 
-        uint16_t pattern_addr                = pattern_addr_base + row_in_sprite;
-        ppu->sprite_shifters[i].pattern_low  = ppu_read_vram(ppu, pattern_addr);
-        ppu->sprite_shifters[i].pattern_high = ppu_read_vram(ppu, pattern_addr + 8);
+        uint16_t pattern_addr = pattern_addr_base + row_in_sprite;
+        uint8_t pat_low       = ppu_read_vram(ppu, pattern_addr);
+        uint8_t pat_high      = ppu_read_vram(ppu, pattern_addr + 8);
+
+        // Bitwise table lookup horizontally flips patterns instantaneously. 
+        if (attributes & 0x40) { 
+            pat_low  = bit_reverse_table[pat_low];
+            pat_high = bit_reverse_table[pat_high];
+        }
+
+        ppu->sprite_shifters[i].pattern_low  = pat_low;
+        ppu->sprite_shifters[i].pattern_high = pat_high;
     }
 }
-
-#ifndef PPU_USE_SIMD_COLOR_EMPHASIS
-static inline uint32_t apply_color_emphasis(const uint32_t* base_color, uint8_t ppu_mask)
-{
-    // Check bits 5, 6, and 7
-    if (!(ppu_mask & 0xE0)) return *base_color;
-
-    uint32_t c = *base_color;
-    
-    // Extract: RGBA layout assumes Red is at LSB
-    float r = (float)(c >> 24 & 0xFF);
-    float g = (float)((c >> 16) & 0xFF);
-    float b = (float)((c >> 8) & 0xFF);
-    uint32_t a = c & 0x000000FF; // Preserve Alpha
-
-    const float f = 0.75f;
-    float r_mult = 1.0f, g_mult = 1.0f, b_mult = 1.0f;
-
-    // Apply attenuation to the channels NOT emphasized
-    if (ppu_mask & PPUMASK_EMPHASIZE_RED)   { g_mult = f; b_mult = f; }
-    if (ppu_mask & PPUMASK_EMPHASIZE_GREEN) { r_mult = f; b_mult = f; }
-    if (ppu_mask & PPUMASK_EMPHASIZE_BLUE)  { r_mult = f; g_mult = f; }
-
-    uint32_t R = (uint32_t)(r * r_mult);
-    uint32_t G = (uint32_t)(g * g_mult);
-    uint32_t B = (uint32_t)(b * b_mult);
-
-    // Reconstruct RGBA
-    return a | (B << 8) | (G << 16) | (R << 24);
-}
-#else  
-static inline uint32_t apply_color_emphasis(const uint32_t* base_color, uint8_t ppu_mask)
-{
-    if (!(ppu_mask & 0xE0)) return *base_color;
-
-    __m128i color_vec = _mm_cvtsi32_si128(*base_color);
-    // Unpack bytes to 16-bit words. Result: [0, Alpha, 0, Blue, 0, Green, 0, Red]
-    color_vec = _mm_unpacklo_epi8(color_vec, _mm_setzero_si128()); 
-
-    const uint16_t atten = 192; // 0.75 * 256
-    uint16_t r_f = 256, g_f = 256, b_f = 256;
-
-    if (ppu_mask & PPUMASK_EMPHASIZE_RED)   { g_f = atten; b_f = atten; }
-    if (ppu_mask & PPUMASK_EMPHASIZE_GREEN) { r_f = atten; b_f = atten; }
-    if (ppu_mask & PPUMASK_EMPHASIZE_BLUE)  { r_f = atten; g_f = atten; }
-
-    // Map factors to match [Alpha, Blue, Green, Red] order
-    // _mm_set_epi16 parameters are (w7, w6, w5, w4, w3, w2, w1, w0)
-    // w0 corresponds to Red, w1 to Green, w2 to Blue, w3 to Alpha
-    __m128i factors = _mm_set_epi16(0, 0, 0, 0, 256, b_f, g_f, r_f);
-
-    color_vec = _mm_mullo_epi16(color_vec, factors);
-    color_vec = _mm_srli_epi16(color_vec, 8); // Shift back to 8-bit range
-    
-    // Pack 16-bit words back to 8-bit bytes (RGBA)
-    color_vec = _mm_packus_epi16(color_vec, _mm_setzero_si128());
-
-    return (uint32_t)_mm_cvtsi128_si32(color_vec);
-}
-#endif // PPU_USE_SIMD_COLOR_EMPHASIS
 
 // --- PPU API Implementation ---
 PPU *PPU_Create(NES *nes)
@@ -470,6 +507,9 @@ void PPU_Reset(PPU *ppu)
     }
 
     ppu->mirror_mode = MIRROR_HORIZONTAL;
+
+    // Precalculate palette lookup mapping explicitly on reset.
+    ppu_update_active_palette(ppu);
 }
 
 uint8_t PPU_ReadRegister(PPU *ppu, uint16_t addr)
@@ -479,18 +519,31 @@ uint8_t PPU_ReadRegister(PPU *ppu, uint16_t addr)
     ppu_decay_open_bus(ppu);
     uint8_t data = ppu->open_bus;
     switch (addr & 0x0007) {
-    case 0x0002: // PPUSTATUS ($2002)
+   case 0x0002: { // PPUSTATUS ($2002)
+        // Check exact timing alignment mapping limits for VBLANK edge suppression 
+        bool read_before_vblank = 
+            (ppu->scanline == ppu->nes->settings.timing.scanline_prerender && ppu->cycle >= 339) ||
+            (ppu->scanline == ppu->nes->settings.timing.scanline_vblank && ppu->cycle <= 1);
+            
+        bool read_exactly_on_vblank = 
+            (ppu->scanline == ppu->nes->settings.timing.scanline_vblank && ppu->cycle >= 2 && ppu->cycle <= 3);
+
+        if (read_before_vblank) {
+            ppu->suppress_vblank_start = true;
+        }
+
+        if (read_exactly_on_vblank) {
+            ppu->status &= ~PPUSTATUS_VBLANK;
+        }
+
         data = (ppu->status & 0xE0) | (ppu->open_bus & 0x1F);
         ppu->status &= ~PPUSTATUS_VBLANK;
         ppu->nmi_occured = false;
-        bool first_vblank_read_cycle =
-            (ppu->cycle == 0) || (ppu->cycle == 1 && ppu->frame_odd && (ppu->mask & PPUMASK_SHOW_BG));
-        ppu->suppress_vblank_start =
-            (ppu->scanline == ppu->nes->settings.timing.scanline_vblank && first_vblank_read_cycle);
         ppu_update_nmi_line(ppu);
         ppu->addr_latch = 0;
         ppu_drive_open_bus(ppu, data);
         break;
+    }
 
     case 0x0004: // OAMDATA ($2004)
         data = ppu->oam[ppu->oam_addr];
@@ -535,7 +588,10 @@ void PPU_WriteRegister(PPU *ppu, uint16_t addr, uint8_t value)
         break;
 
     case 0x0001: // PPUMASK ($2001)
-        ppu->mask = value;
+        if (ppu->mask != value) {
+            ppu->mask = value;
+            ppu_update_active_palette(ppu);
+        }
         break;
 
     case 0x0002: // PPUSTATUS ($2002) - Read-only
@@ -661,55 +717,41 @@ void PPU_Step(PPU *ppu)
         bool    spr_is_opaque         = false;
         bool    spr_is_foreground     = true;
 
+        bool sprites_visible_at_pixel = (ppu->mask & PPUMASK_SHOW_SPRITES) && (x >= 8 || (ppu->mask & PPUMASK_CLIP_SPRITES));
         bool sprite_0_opaque_at_pixel = false;
+
+        // Hardware-Accurate Sprite Execution (Shifters and X Counters)
         if (ppu->mask & PPUMASK_SHOW_SPRITES) {
             for (int i = 0; i < ppu->sprite_count_current_scanline; ++i) {
                 SpriteShifter *s = &ppu->sprite_shifters[i];
-                if (s->original_oam_index == 0 && x >= s->x_pos && x < (s->x_pos + 8)) {
-                    int col_in_sprite = x - s->x_pos;
-                    if (s->attributes & 0x40) {
-                        col_in_sprite = 7 - col_in_sprite;
-                    }
-
-                    uint8_t spr_pt_bit0 = (s->pattern_low >> (7 - col_in_sprite)) & 1;
-                    uint8_t spr_pt_bit1 = (s->pattern_high >> (7 - col_in_sprite)) & 1;
-                    uint8_t spr_val     = (spr_pt_bit1 << 1) | spr_pt_bit0;
-
-                    if (spr_val != 0) {
-                        sprite_0_opaque_at_pixel = true;
-                    }
-                    break;
-                }
-            }
-        }
-
-        bool sprites_visible_at_pixel =
-            (ppu->mask & PPUMASK_SHOW_SPRITES) && (x >= 8 || (ppu->mask & PPUMASK_CLIP_SPRITES));
-        if (sprites_visible_at_pixel) {
-            for (int i = 0; i < ppu->sprite_count_current_scanline; ++i) {
-                SpriteShifter *s = &ppu->sprite_shifters[i];
-                if (x >= s->x_pos && x < (s->x_pos + 8)) {
-                    int col_in_sprite = x - s->x_pos;
-                    if (s->attributes & 0x40) {
-                        col_in_sprite = 7 - col_in_sprite;
-                    }
-
-                    uint8_t spr_pt_bit0     = (s->pattern_low >> (7 - col_in_sprite)) & 1;
-                    uint8_t spr_pt_bit1     = (s->pattern_high >> (7 - col_in_sprite)) & 1;
+                
+                // Once an active sprite arrives at its X counter 0, shift it over 8 pixel cycles 
+                if (s->x_pos == 0) {
+                    uint8_t spr_pt_bit0 = (s->pattern_low >> 7) & 1;
+                    uint8_t spr_pt_bit1 = (s->pattern_high >> 7) & 1;
                     uint8_t current_spr_val = (spr_pt_bit1 << 1) | spr_pt_bit0;
 
-                    if (current_spr_val != 0) {
-                        spr_pixel_pattern_val        = current_spr_val;
-                        uint8_t spr_palette_idx_bits = s->attributes & 0x03;
-                        spr_final_color_idx          = ppu_palette_read(
-                            ppu, (uint16_t)(0x3F10 + (spr_palette_idx_bits << 2) + spr_pixel_pattern_val));
-                        spr_final_color_idx &= 0x3F;
-
-                        spr_is_opaque     = true;
-                        spr_is_foreground = !(s->attributes & 0x20);
-
-                        break; 
+                    if (s->original_oam_index == 0 && current_spr_val != 0) {
+                        sprite_0_opaque_at_pixel = true;
                     }
+
+                    if (current_spr_val != 0 && !spr_is_opaque) {
+                        if (sprites_visible_at_pixel) {
+                            spr_pixel_pattern_val = current_spr_val;
+                            uint8_t spr_palette_idx_bits = s->attributes & 0x03;
+                            spr_final_color_idx = ppu_palette_read(
+                                ppu, (uint16_t)(0x3F10 + (spr_palette_idx_bits << 2) + spr_pixel_pattern_val));
+                            spr_final_color_idx &= 0x3F;
+
+                            spr_is_opaque     = true;
+                            spr_is_foreground = !(s->attributes & 0x20);
+                        }
+                    }
+
+                    s->pattern_low <<= 1;
+                    s->pattern_high <<= 1;
+                } else {
+                    s->x_pos--;
                 }
             }
         }
@@ -740,9 +782,8 @@ void PPU_Step(PPU *ppu)
             ppu->indexed_framebuffer[y * PPU_FRAMEBUFFER_WIDTH + x] = combined_color_idx;
         }
 
-        // Apply RGBA Array representation
-        const uint32_t *base_color = &ppu->nes->settings.video.palette[combined_color_idx];
-        uint32_t final_pixel_color = apply_color_emphasis(base_color, ppu->mask);
+        // Apply O(1) Precalculated Color Lookup Array
+        uint32_t final_pixel_color = ppu->active_palette[combined_color_idx];
 
         if (ppu->framebuffer) {
             ppu->framebuffer[y * PPU_FRAMEBUFFER_WIDTH + x] = final_pixel_color;
@@ -759,7 +800,7 @@ void PPU_Step(PPU *ppu)
 
         bool is_fetch_cycle_range = (ppu->cycle >= 1 && ppu->cycle <= 256) || (ppu->cycle >= 321 && ppu->cycle <= 336);
         if (is_fetch_cycle_range) {
-            switch (ppu->cycle % 8) {
+            switch (ppu->cycle & 7) {  // Micro-optimization: Bitwise replace modulo 8 logic 
             case 1:
                 load_background_tile_data(ppu);
                 break;
@@ -901,6 +942,7 @@ const uint32_t* PPU_SetPalette(PPU *ppu, const uint32_t *palette)
 {
     if (!ppu || !ppu->nes || !palette) return NULL;
     memcpy(ppu->nes->settings.video.palette, palette, 64 * sizeof(uint32_t));
+    ppu_update_active_palette(ppu);
     return palette;
 }
 
