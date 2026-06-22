@@ -17,13 +17,10 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     strategy:
-      # Set fail-fast to false to ensure that feedback is delivered for all matrix combinations. Consider changing this to true when your workflow is stable.
+      # Set fail-fast to false to ensure that feedback is delivered for all matrix combinations.
       fail-fast: false
 
-      # Set up a matrix to run the following 3 configurations:
-      # 1. <Windows, RelWithDebInfo, latest MSVC compiler toolchain on the default runner image, default generator>
-      # 2. <Linux, RelWithDebInfo, latest GCC compiler toolchain on the default runner image, default generator>
-      # 3. <Linux, RelWithDebInfo, latest Clang compiler toolchain on the default runner image, default generator>
+      # Set up a matrix to run the following configurations:
       matrix:
         os: [ubuntu-latest, windows-2025]
         build_type: [RelWithDebInfo]
@@ -55,22 +52,28 @@ jobs:
       with:
         platform: x64
 
+    # --- SETUP CCACHE & REPOSITORY CACHING ---
+    - name: Install ccache (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ccache
+
+    - name: Configure ccache Environment
+      uses: chriskuehl/setup-ccache@v2
+      with:
+        # Unique cache key per OS, compiler, and specific build matrix configurations
+        key: ${{ runner.os }}-${{ matrix.c_compiler }}-${{ matrix.build_type }}-ccache-${{ github.sha }}
+        restore-keys: |
+          ${{ runner.os }}-${{ matrix.c_compiler }}-${{ matrix.build_type }}-ccache-
+    # ----------------------------------------
+
     - name: Install Full Vulkan SDK (Windows)
       if: runner.os == 'Windows'
       uses: humbletim/install-vulkan-sdk@v1.2
       with:
         version: latest
         cache: true
-
-    #- name: Set up MSVC Developer Command Prompt
-    #  if: runner.os == 'Windows'
-    #  uses: step-security/msvc-dev-cmd@v1
-
-    #- name: Install LuaJIT (Windows)
-    #  if: runner.os == 'Windows'
-    #  uses: leafo/gh-actions-lua@v10
-    #  with:
-    #    luaVersion: "luajit-2.1.0-beta3"
 
     - name: Install Dependencies
       if: runner.os == 'Linux'
@@ -106,9 +109,18 @@ jobs:
       run: |
         echo "build-output-dir=${{ github.workspace }}/build" >> "$GITHUB_OUTPUT"
 
+    # Injected compiler launchers below tell CMake to route compilation pipelines through ccache
     - name: Configure CMake
       shell: bash
-      run: cmake ${{ matrix.generator }} -B "${{ steps.strings.outputs.build-output-dir }}" -DCMAKE_CXX_COMPILER=${{ matrix.cpp_compiler }} -DCMAKE_C_COMPILER=${{ matrix.c_compiler }} -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -S "${{ github.workspace }}"
+      run: |
+        cmake ${{ matrix.generator }} \
+          -B "${{ steps.strings.outputs.build-output-dir }}" \
+          -DCMAKE_CXX_COMPILER=${{ matrix.cpp_compiler }} \
+          -DCMAKE_C_COMPILER=${{ matrix.c_compiler }} \
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+          -S "${{ github.workspace }}"
 
     - name: Build
       run: cmake --build ${{ steps.strings.outputs.build-output-dir }} --config ${{ matrix.build_type }}

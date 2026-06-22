@@ -37,7 +37,23 @@ set(LUAJIT_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/LuaJIT")
 
 message(STATUS "Building LuaJIT from subprojects: ext/luajit-cmake + ext/LuaJIT")
 set(LUAJIT_DIR "${LUAJIT_SOURCE_DIR}" CACHE PATH "LuaJIT source root" FORCE)
+
 add_subdirectory(luajit-cmake)
+
+if(TARGET minilua)
+    set_target_properties(minilua PROPERTIES 
+        EXCLUDE_FROM_ALL TRUE
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/host_tools"
+    )
+endif()
+
+if(TARGET buildvm)
+    set_target_properties(buildvm PROPERTIES 
+        EXCLUDE_FROM_ALL TRUE
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/host_tools"
+    )
+endif()
+
 set(USE_LUAJIT 1 CACHE BOOL "Enable LuaJIT scripting" FORCE)
 set(LUA_LIBS luajit::lib CACHE STRING "Lua libraries to link" FORCE)
 set(LUA_INCLUDE "${LUAJIT_SOURCE_DIR}/src" CACHE STRING "Lua include directory" FORCE)

@@ -10,6 +10,7 @@ typedef struct APU APU;
 typedef struct PPU PPU;
 typedef struct BUS BUS;
 typedef struct ROM ROM;
+typedef struct TAS TAS;
 
 typedef enum {
     NES_REGION_NTSC,    // Default 60Hz 
@@ -70,6 +71,7 @@ typedef struct NES {
     PPU* ppu; // Pointer to the PPU
     BUS* bus; // Pointer to the BUS
     ROM* rom; // Pointer to the ROM
+    TAS* tas; // Pointer to the TAS player (if any)
 
     uint8_t controllers[2]; // Two NES controllers
     uint8_t controller_strobe; // Strobe flag for controllers

@@ -13,6 +13,7 @@
 #include "cNES/rom.h"
 #include "cNES/palette.h"
 #include "cNES/loaders/ines.h"
+#include "cNES/tas.h"
 
 static void NES_ResetMapperState(NES *nes)
 {
@@ -76,6 +77,11 @@ NES *NES_Create()
 	nes->settings.frame_time		= 16.6392673398f;
 
 	NES_Reset(nes);
+
+	nes->tas = TAS_Create();
+	if (TAS_Load(nes->tas, "speedrun.fm2")) {
+		DEBUG_INFO("Successfully loaded TAS replay.");
+	}
 
 	return nes;
 
@@ -154,6 +160,13 @@ int NES_Load(NES *nes, ROM *rom)
 	nes->bus->chrRomSize = (uint8_t)((chr_rom_size_bytes + 0x1FFFu) / 0x2000u);
 
 	NES_Reset(nes);
+
+	//	
+	nes->tas = TAS_Create();
+	if (TAS_Load(nes->tas, "speedrun.fm2")) {
+		DEBUG_INFO("Successfully loaded TAS replay.");
+	}
+
 	return 0; // Success
 
 error_after_rom_load:
@@ -245,6 +258,9 @@ void NES_Step(NES *nes)
 
 void NES_StepFrame(NES *nes)
 {
+	if (!TAS_IsFinished(nes->tas, nes))
+		TAS_ApplyFrame(nes->tas, nes);
+
 	const int starting_frame = nes->ppu->frame_odd;
 	while (nes->ppu->frame_odd == starting_frame) {
 		NES_Step(nes);
