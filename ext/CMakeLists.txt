@@ -43,14 +43,21 @@ add_subdirectory(luajit-cmake)
 if(TARGET minilua)
     set_target_properties(minilua PROPERTIES 
         EXCLUDE_FROM_ALL TRUE
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/host_tools"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/host_tools"
     )
 endif()
 
 if(TARGET buildvm)
     set_target_properties(buildvm PROPERTIES 
         EXCLUDE_FROM_ALL TRUE
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/host_tools"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/host_tools"
+    )
+endif()
+
+if(TARGET luajit)
+    set_target_properties(luajit PROPERTIES 
+        EXCLUDE_FROM_ALL TRUE
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/host_tools"
     )
 endif()
 

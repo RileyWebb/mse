@@ -111,7 +111,7 @@ jobs:
       with:
         # A unique key for the cache tied to the OS and compiler
         key: ${{ matrix.os }}-${{ matrix.c_compiler }}
-        max-size: 500M
+        max-size: 1024M
 
     - name: Configure CMake 
       shell: bash 
