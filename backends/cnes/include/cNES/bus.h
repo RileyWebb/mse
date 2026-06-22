@@ -65,10 +65,7 @@ static inline void BUS_DriveOpenBus(NES *nes, uint8_t value)
     nes->cpu_open_bus = value;
 }
 
-static inline uint8_t BUS_GetOpenBus(NES *nes)
-{
-    return nes->cpu_open_bus;
-}
+uint8_t BUS_GetOpenBus(NES *nes);
 
 // OPTIMIZATION: Inline BUS_Read for ~5.4 million CPU calls per second
 static inline uint8_t BUS_Read(NES* nes, uint16_t address) {
@@ -84,11 +81,9 @@ static inline uint8_t BUS_Read(NES* nes, uint16_t address) {
         BUS_DriveOpenBus(nes, value);
         return value;
     }
-    // OAM DMA register read - return PPU open bus (last driven value)
+    // OAM DMA register read - return CPU open bus (last driven value)
     if (address == 0x4014) {
-        uint8_t value = PPU_GetOpenBusWithDecay(nes->ppu);
-        BUS_DriveOpenBus(nes, value);
-        return value;
+        return BUS_GetOpenBus(nes);
     }
     if (address == 0x4015) {
         uint8_t value = APU_ReadRegister(nes->apu, address);

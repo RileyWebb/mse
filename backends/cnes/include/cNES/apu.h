@@ -88,6 +88,7 @@ typedef struct APU {
     bool frame_mode_five_step;
     bool frame_irq_inhibit;
     bool frame_irq_flag;
+    bool dmc_dma_pending;    
 
     double cycles_per_sample;
     double sample_cycle_accumulator;
@@ -100,6 +101,7 @@ typedef struct APU {
     APU_TriangleChannel triangle;
     APU_NoiseChannel noise;
     APU_DMCChannel dmc;
+    uint64_t next_dmc_dma_cycle; 
 } APU;
 
 APU *APU_Create(NES *nes);
@@ -107,6 +109,7 @@ void APU_Destroy(APU *apu);
 void APU_Reset(APU *apu);
 void APU_Clock(APU *apu, uint32_t cpu_cycles);
 void APU_CatchUp(APU *apu);
+void APU_HandleDMCDMA(struct NES *nes);
 uint8_t APU_ReadRegister(APU *apu, uint16_t addr);
 void APU_WriteRegister(APU *apu, uint16_t addr, uint8_t value);
 void APU_SetVolume(APU *apu, float volume);

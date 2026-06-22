@@ -75,13 +75,9 @@ NES *NES_Create()
 	nes->settings.audio.sample_rate = 44100;
 	nes->settings.audio.volume		= 1.0f;
 	nes->settings.frame_time		= 16.6392673398f;
+	nes->settings.enable_catch_up   = true;
 
 	NES_Reset(nes);
-
-	nes->tas = TAS_Create();
-	if (TAS_Load(nes->tas, "speedrun.fm2")) {
-		DEBUG_INFO("Successfully loaded TAS replay.");
-	}
 
 	return nes;
 
@@ -162,10 +158,10 @@ int NES_Load(NES *nes, ROM *rom)
 	NES_Reset(nes);
 
 	//	
-	nes->tas = TAS_Create();
-	if (TAS_Load(nes->tas, "speedrun.fm2")) {
-		DEBUG_INFO("Successfully loaded TAS replay.");
-	}
+	//nes->tas = TAS_Create();
+	//if (TAS_Load(nes->tas, "speedrun.fm2")) {
+	//	DEBUG_INFO("Successfully loaded TAS replay.");
+	//}
 
 	return 0; // Success
 
@@ -177,6 +173,47 @@ error_rom_load:
 
 void NES_Step(NES *nes)
 {
+	if (nes->settings.enable_catch_up) {
+		uint64_t total_cycles_before = nes->cpu->total_cycles;
+		bool interrupt_serviced = false;
+
+		// 1. NMI has the highest hardware priority
+		if (nes->ppu && nes->ppu->nmi_interrupt_line) {
+			CPU_NMI(nes->cpu);
+			nes->ppu->nmi_interrupt_line = false;
+			interrupt_serviced = true;
+		} 
+		// 2. IRQ has lower priority
+		else if (nes->apu && (nes->apu->frame_irq_flag || nes->apu->dmc.irq_flag)) {
+			CPU_IRQ(nes->cpu);
+			
+			// IRQs are maskable. We only consider it "serviced" if the CPU 
+			// actually took the jump (i.e., the 'I' flag was clear).
+			if (nes->cpu->total_cycles != total_cycles_before) {
+				interrupt_serviced = true;
+			}
+		}
+
+		// 3. Only execute a standard instruction if an interrupt didn't hijack the CPU
+		if (!interrupt_serviced) {
+			int cpu_cycles = CPU_Step(nes->cpu);
+			if (cpu_cycles == -1) {
+				DEBUG_ERROR("CPU execution halted due to error");
+			}
+		}
+		
+		// 4. Ensure unconditional lazy catch-up syncs components to the exact CPU cycle
+		if (nes->ppu) {
+			PPU_CatchUp(nes->ppu);
+		}
+		
+		if (nes->apu) {
+			APU_CatchUp(nes->apu);
+		}
+		return;
+	}
+
+	// Legacy Step-by-Step Execution
 	uint64_t total_cycles_before = nes->cpu->total_cycles;
 
 	if (nes->apu && (nes->apu->frame_irq_flag || nes->apu->dmc.irq_flag)) {
@@ -217,43 +254,6 @@ void NES_Step(NES *nes)
 		for (int i = 0; i < 7 * 3; i++)
 			PPU_Step(nes->ppu);
 	}
-	/*
-    uint64_t total_cycles_before = nes->cpu->total_cycles;
-    bool interrupt_serviced = false;
-
-    // 1. NMI has the highest hardware priority
-    if (nes->ppu && nes->ppu->nmi_interrupt_line) {
-        CPU_NMI(nes->cpu);
-        nes->ppu->nmi_interrupt_line = false;
-        interrupt_serviced = true;
-    } 
-    // 2. IRQ has lower priority
-    else if (nes->apu && (nes->apu->frame_irq_flag || nes->apu->dmc.irq_flag)) {
-        CPU_IRQ(nes->cpu);
-        
-        // IRQs are maskable. We only consider it "serviced" if the CPU 
-        // actually took the jump (i.e., the 'I' flag was clear).
-        if (nes->cpu->total_cycles != total_cycles_before) {
-            interrupt_serviced = true;
-        }
-    }
-
-    // 3. Only execute a standard instruction if an interrupt didn't hijack the CPU
-    if (!interrupt_serviced) {
-        int cpu_cycles = CPU_Step(nes->cpu);
-        if (cpu_cycles == -1) {
-            DEBUG_ERROR("CPU execution halted due to error");
-        }
-    }
-    
-    // 4. Ensure unconditional lazy catch-up syncs components to the exact CPU cycle
-    if (nes->ppu) {
-        PPU_CatchUp(nes->ppu);
-    }
-    
-    if (nes->apu) {
-        APU_CatchUp(nes->apu);
-    }*/
 }
 
 void NES_StepFrame(NES *nes)

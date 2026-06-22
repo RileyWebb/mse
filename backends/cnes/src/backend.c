@@ -4,6 +4,7 @@
 #include "cNES/nes.h"
 #include "cNES/rom.h"
 #include "cNES/ppu.h"
+#include "cNES/apu.h"
 #include "cNES/version.h"
 #include "cNES/palette.h"
 #include "libmse/libmse_gfx.h"
@@ -13,6 +14,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <time.h>
+#include <pthread.h>
 
 LIBMSE_API mse_backend_info_t info = {.name		   = "cNES",
 									  .version	   = CNES_VERSION_STRING,
@@ -45,7 +47,72 @@ LIBMSE_API const mse_file_handler_t mse_file_handlers[] = {{".nes", "iNES ROM", 
 static NES	*g_nes			   = NULL;
 static char *g_active_rom_path = NULL;
 static mse_gfx_texture_t *g_texture = NULL;
-static mse_gfx_transfer_buffer_t *g_transfer_buffer = NULL;
+static mse_gfx_transfer_buffer_t *g_transfer_buffers[2] = {NULL, NULL};
+static void *g_mapped_buffers[2] = {NULL, NULL};
+static int g_current_buffer_index = 0;
+
+// Video worker thread variables
+static pthread_t g_video_thread;
+static pthread_mutex_t g_video_mutex;
+static pthread_cond_t g_video_cond;
+static pthread_cond_t g_video_done_cond;
+static bool g_video_thread_running = false;
+static int g_buffer_to_upload = -1; // -1 means none
+
+// Audio worker thread variables
+static pthread_t g_audio_thread;
+static bool g_audio_thread_running = false;
+static mse_event_t *g_audio_event = NULL;
+
+static void* video_worker_thread(void* arg) {
+    while (g_video_thread_running) {
+        pthread_mutex_lock(&g_video_mutex);
+        while (g_buffer_to_upload == -1 && g_video_thread_running) {
+            pthread_cond_wait(&g_video_cond, &g_video_mutex);
+        }
+        
+        if (!g_video_thread_running) {
+            pthread_mutex_unlock(&g_video_mutex);
+            break;
+        }
+        
+        int buffer_idx = g_buffer_to_upload;
+        pthread_mutex_unlock(&g_video_mutex);
+
+        // Direct staging buffer upload: Unmap -> Upload -> Remap
+        mse_gfx_unmap_transfer_buffer(g_transfer_buffers[buffer_idx]);
+        mse_gfx_upload_texture(g_texture, g_transfer_buffers[buffer_idx], 256 * 4);
+        g_mapped_buffers[buffer_idx] = mse_gfx_map_transfer_buffer(g_transfer_buffers[buffer_idx]);
+
+        pthread_mutex_lock(&g_video_mutex);
+        g_buffer_to_upload = -1;
+        pthread_cond_signal(&g_video_done_cond);
+        pthread_mutex_unlock(&g_video_mutex);
+    }
+    return NULL;
+}
+
+static void* audio_worker_thread(void* arg) {
+    float local_buffer[1024];
+
+    while (g_audio_thread_running) {
+        if (g_nes && g_nes->apu) {
+            // Consume samples to prevent buffer overflow and simulate processing
+            size_t read = APU_ReadSamples(g_nes->apu, local_buffer, 1024);
+            if (read > 0) {
+                // Here we would apply filtering and send to host audio API
+                // For now, it just drains the lock-free buffer
+            }
+        }
+        
+        // Sleep ~5ms (roughly 200Hz polling rate) to avoid pegging CPU
+        if (g_audio_event) {
+            mse_event_wait_timeout(g_audio_event, 5);
+        }
+    }
+    
+    return NULL;
+}
 
 bool cmd_reset_handler(int argc, const char** argv) {
 	if (g_nes)
@@ -117,15 +184,39 @@ LIBMSE_API bool init(void)
 		return false;
 	}
 
-	g_transfer_buffer = mse_gfx_create_transfer_buffer(256 * 240 * sizeof(uint32_t));
-	if (!g_transfer_buffer) {
+	g_transfer_buffers[0] = mse_gfx_create_transfer_buffer(256 * 240 * sizeof(uint32_t));
+	g_transfer_buffers[1] = mse_gfx_create_transfer_buffer(256 * 240 * sizeof(uint32_t));
+	if (!g_transfer_buffers[0] || !g_transfer_buffers[1]) {
+		if (g_transfer_buffers[0]) mse_gfx_destroy_transfer_buffer(g_transfer_buffers[0]);
+		if (g_transfer_buffers[1]) mse_gfx_destroy_transfer_buffer(g_transfer_buffers[1]);
 		mse_gfx_destroy_texture(g_texture);
 		NES_Destroy(g_nes);
 		return false;
 	}
 
+    g_mapped_buffers[0] = mse_gfx_map_transfer_buffer(g_transfer_buffers[0]);
+    g_mapped_buffers[1] = mse_gfx_map_transfer_buffer(g_transfer_buffers[1]);
+
 	register_cvars(g_nes);
 	register_cmds(g_nes);
+
+    // Initialize Video Worker
+    g_current_buffer_index = 0;
+    PPU_SetOutputBuffers(g_nes->ppu, (uint32_t *)g_mapped_buffers[0], NULL);
+
+    pthread_mutex_init(&g_video_mutex, NULL);
+    pthread_cond_init(&g_video_cond, NULL);
+    pthread_cond_init(&g_video_done_cond, NULL);
+    g_video_thread_running = true;
+    g_buffer_to_upload = -1;
+    pthread_create(&g_video_thread, NULL, video_worker_thread, NULL);
+	pthread_setname_np(g_video_thread, "cNES_VideoWorker");
+
+    // Initialize Audio Worker
+    g_audio_thread_running = true;
+    g_audio_event = mse_event_create();
+    pthread_create(&g_audio_thread, NULL, audio_worker_thread, NULL);
+	pthread_setname_np(g_audio_thread, "cNES_AudioWorker");
 
 	return true;
 }
@@ -214,9 +305,29 @@ LIBMSE_API bool load_rom_from_path(const char *path)
 
 LIBMSE_API void shutdown(void)
 {
-	if (g_transfer_buffer) {
-		mse_gfx_destroy_transfer_buffer(g_transfer_buffer);
-		g_transfer_buffer = NULL;
+    g_video_thread_running = false;
+    pthread_mutex_lock(&g_video_mutex);
+    pthread_cond_signal(&g_video_cond);
+    pthread_cond_signal(&g_video_done_cond);
+    pthread_mutex_unlock(&g_video_mutex);
+    pthread_join(g_video_thread, NULL);
+    
+    g_audio_thread_running = false;
+    pthread_join(g_audio_thread, NULL);
+
+    pthread_mutex_destroy(&g_video_mutex);
+    pthread_cond_destroy(&g_video_cond);
+    pthread_cond_destroy(&g_video_done_cond);
+
+	if (g_transfer_buffers[0]) {
+        if (g_mapped_buffers[0]) mse_gfx_unmap_transfer_buffer(g_transfer_buffers[0]);
+		mse_gfx_destroy_transfer_buffer(g_transfer_buffers[0]);
+		g_transfer_buffers[0] = NULL;
+	}
+	if (g_transfer_buffers[1]) {
+        if (g_mapped_buffers[1]) mse_gfx_unmap_transfer_buffer(g_transfer_buffers[1]);
+		mse_gfx_destroy_transfer_buffer(g_transfer_buffers[1]);
+		g_transfer_buffers[1] = NULL;
 	}
 	if (g_texture) {
 		mse_gfx_destroy_texture(g_texture);
@@ -286,7 +397,7 @@ LIBMSE_API void update_inputs(const float *inputs)
 
 LIBMSE_API void start(mse_event_t *stop_event)
 {
-	if (g_nes == NULL || stop_event == NULL || g_texture == NULL || g_transfer_buffer == NULL) {
+	if (g_nes == NULL || stop_event == NULL || g_texture == NULL || g_transfer_buffers[0] == NULL || g_transfer_buffers[1] == NULL) {
 		return;
 	}
 
@@ -296,18 +407,21 @@ LIBMSE_API void start(mse_event_t *stop_event)
 
 		NES_StepFrame(g_nes);
 
-		/* Copy PPU framebuffer to mse_gfx_transfer_buffer_t */
-		const uint32_t *ppu_pixels = PPU_GetFramebuffer(g_nes->ppu);
-		if (ppu_pixels != NULL) {
-			void *mapped_ptr = mse_gfx_map_transfer_buffer(g_transfer_buffer);
-			if (mapped_ptr) {
-				// Fast memory copy instead of iterating over 61,440 individual array elements
-				memcpy(mapped_ptr, ppu_pixels, 256 * 240 * sizeof(uint32_t));
-				
-				mse_gfx_unmap_transfer_buffer(g_transfer_buffer);
-				mse_gfx_upload_texture(g_texture, g_transfer_buffer, 256 * 4);
-			}
-		}
+		/* Swap buffers and signal video worker */
+        pthread_mutex_lock(&g_video_mutex);
+        
+        while (g_buffer_to_upload != -1 && g_video_thread_running) {
+            pthread_cond_wait(&g_video_done_cond, &g_video_mutex);
+        }
+        
+        g_buffer_to_upload = g_current_buffer_index;
+        
+        // Point PPU to the new back buffer for the next frame
+        g_current_buffer_index = (g_current_buffer_index + 1) % 2;
+        PPU_SetOutputBuffers(g_nes->ppu, (uint32_t *)g_mapped_buffers[g_current_buffer_index], NULL);
+        
+        pthread_cond_signal(&g_video_cond);
+        pthread_mutex_unlock(&g_video_mutex);
 
 		long frame_time_ms;
 		struct timespec end_time;

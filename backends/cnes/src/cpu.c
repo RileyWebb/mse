@@ -6,6 +6,7 @@
 #include "cNES/nes.h"
 #include "cNES/bus.h"
 #include "cNES/ppu.h"
+#include "cNES/apu.h"
 
 #include "cNES/cpu.h"
 
@@ -1319,6 +1320,10 @@ void CPU_Destroy(CPU *cpu)
 
 int CPU_Step(CPU *cpu)
 {
+    if (cpu->nes->apu && cpu->nes->apu->next_dmc_dma_cycle <= cpu->total_cycles) {
+        APU_HandleDMCDMA(cpu->nes);
+    }
+
     if (cpu->nmi_pending) {
         cpu->nmi_pending = false;
         CPU_NMI(cpu);

@@ -130,3 +130,17 @@ void BUS_PPU_Write(struct BUS *bus, uint16_t address, uint8_t value)
         bus->palette[pal_addr] = value;
     }
 }
+
+uint8_t BUS_GetOpenBus(NES *nes)
+{
+    if (nes->apu && nes->cpu && nes->apu->next_dmc_dma_cycle <= nes->cpu->total_cycles + 8) {
+        uint64_t fast_forward = 0;
+        if (nes->apu->next_dmc_dma_cycle > nes->cpu->total_cycles) {
+            fast_forward = nes->apu->next_dmc_dma_cycle - nes->cpu->total_cycles;
+            nes->cpu->total_cycles += fast_forward;
+        }
+        APU_HandleDMCDMA(nes);
+        nes->cpu->total_cycles -= fast_forward;
+    }
+    return nes->cpu_open_bus;
+}

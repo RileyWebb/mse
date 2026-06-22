@@ -23,7 +23,7 @@
 #include <emmintrin.h> // SSE2 intrinsics
 #endif
 
-#undef PPU_USE_SIMD_COLOR_EMPHASIS
+//#undef PPU_USE_SIMD_COLOR_EMPHASIS
 
 #define PPU_OPEN_BUS_DECAY_MS 750ULL
 
@@ -98,17 +98,17 @@ static inline void ppu_update_active_palette(PPU *ppu)
 uint64_t PPU_GetTotalCycles(PPU *ppu) {
     if (!ppu || !ppu->nes) return 0;
     
-    uint64_t cycles_per_scanline = ppu->nes->settings.timing.cycles_per_scanline;
-    uint64_t cycles_per_frame = (ppu->nes->settings.timing.scanline_prerender + 1) * cycles_per_scanline;
+    uint64_t cycles_per_scanline = ppu->cycles_per_scanline;
+    uint64_t cycles_per_frame = (ppu->scanline_prerender + 1) * cycles_per_scanline;
     
     int scanline = ppu->scanline;
-    if (scanline < 0) scanline = ppu->nes->settings.timing.scanline_prerender;
+    if (scanline < 0) scanline = ppu->scanline_prerender;
 
     // Calculate absolute total cycles elapsed since boot/reset
     uint64_t current_absolute = ppu->frame_count * cycles_per_frame + (uint64_t)scanline * cycles_per_scanline + ppu->cycle;
     
     // Offset by the PPU's starting scanline to normalize starting cycles to 0
-    uint64_t start_absolute = ppu->nes->settings.timing.scanline_prerender * cycles_per_scanline;
+    uint64_t start_absolute = ppu->scanline_prerender * cycles_per_scanline;
     
     if (current_absolute < start_absolute) return 0;
     return current_absolute - start_absolute;
@@ -147,22 +147,19 @@ static inline void ppu_drive_open_bus(PPU *ppu, uint8_t value)
     ppu->open_bus_last_update_ms = ppu_now_ms(ppu);
 }
 
+static const uint8_t pal_indices[32] = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+    0, 17, 18, 19, 4, 21, 22, 23, 8, 25, 26, 27, 12, 29, 30, 31
+};
+
 static inline uint8_t ppu_palette_read(PPU *ppu, uint16_t addr)
 {
-    uint16_t pal_addr = addr & 0x1F;
-    if ((pal_addr & 0x03) == 0) {
-        pal_addr &= 0x0F;
-    }
-    return ppu->palette[pal_addr];
+    return ppu->palette[pal_indices[addr & 0x1F]];
 }
 
 static inline void ppu_palette_write(PPU *ppu, uint16_t addr, uint8_t value)
 {
-    uint16_t pal_addr = addr & 0x1F;
-    if ((pal_addr & 0x03) == 0) {
-        pal_addr &= 0x0F;
-    }
-    ppu->palette[pal_addr] = value;
+    ppu->palette[pal_indices[addr & 0x1F]] = value;
     ppu_update_active_palette(ppu);
 }
 
@@ -183,25 +180,6 @@ static inline void ppu_update_nmi_line(PPU *ppu)
     ppu->previous_nmi_output = true;
 }
 
-static inline uint16_t mirror_vram_addr(PPU *ppu, uint16_t addr)
-{
-    addr &= 0x0FFF;
-    switch (ppu->mirror_mode) {
-    case MIRROR_HORIZONTAL:
-        return ((addr >> 1) & 0x0400) | (addr & 0x03FF);
-    case MIRROR_VERTICAL:
-        return addr & 0x07FF;
-    case MIRROR_SINGLE_SCREEN_LOW:
-        return addr & 0x03FF;
-    case MIRROR_SINGLE_SCREEN_HIGH:
-        return (addr & 0x03FF) | 0x0400;
-    case MIRROR_FOUR_SCREEN:
-        return addr;
-    default:
-        return ((addr >> 1) & 0x0400) | (addr & 0x03FF);
-    }
-}
-
 static inline uint8_t ppu_read_vram(PPU *ppu, uint16_t addr)
 {
     addr &= 0x3FFF;
@@ -209,12 +187,12 @@ static inline uint8_t ppu_read_vram(PPU *ppu, uint16_t addr)
     if (addr < 0x2000) { // CHR ROM/RAM ($0000 - $1FFF)
         return BUS_PPU_ReadCHR(ppu->nes->bus, addr);
     } else if (addr < 0x3F00) { // Nametable RAM ($2000 - $3EFF)
-        return ppu->vram[mirror_vram_addr(ppu, addr & 0x2FFF)];
+        uint16_t nt_addr = addr & 0x0FFF;
+        return ppu->nametable_ptrs[nt_addr >> 10][nt_addr & 0x03FF];
     } else { // Palette RAM ($3F00 - $3FFF)
         return ppu_palette_read(ppu, addr);
     }
 
-    DEBUG_ERROR("PPU: Unhandled PPU VRAM read at address 0x%04X", addr);
     return 0;
 }
 
@@ -225,11 +203,10 @@ static inline void ppu_write_vram(PPU *ppu, uint16_t addr, uint8_t value)
     if (addr < 0x2000) { // CHR RAM ($0000 - $1FFF)
         BUS_PPU_WriteCHR(ppu->nes->bus, addr, value);
     } else if (addr < 0x3F00) { // Nametable RAM ($2000 - $3EFF)
-        ppu->vram[mirror_vram_addr(ppu, addr & 0x2FFF)] = value;
+        uint16_t nt_addr = addr & 0x0FFF;
+        ppu->nametable_ptrs[nt_addr >> 10][nt_addr & 0x03FF] = value;
     } else if (addr < 0x4000) { // Palette RAM ($3F00 - $3FFF)
         ppu_palette_write(ppu, addr, value);
-    } else {
-        DEBUG_ERROR("PPU: Unhandled PPU VRAM write at address 0x%04X value 0x%02X", addr, value);
     }
 }
 
@@ -310,34 +287,60 @@ static void feed_background_shifters(PPU *ppu)
 static void evaluate_sprites(PPU *ppu)
 {
     ppu->sprite_count_current_scanline = 0;
-    ppu->sprite_zero_found_for_next_scanline = false;
 
     memset(ppu->secondary_oam, 0xFF, PPU_SECONDARY_OAM_SIZE); 
 
     uint8_t secondary_oam_idx = 0;
     uint8_t sprite_height     = (ppu->ctrl & PPUCTRL_SPRITE_SIZE) ? 16 : 8;
 
-    for (int oam_idx = 0; oam_idx < 64; ++oam_idx) {
-        uint8_t sprite_y  = ppu->oam[oam_idx * 4 + 0];
-        int next_scanline = (ppu->scanline == ppu->nes->settings.timing.scanline_prerender) ? 0 : (ppu->scanline + 1);
+    int oam_start = ppu->oam_addr;
+    int n = oam_start / 4;
+    int m = oam_start & 3;
+    int sprites_checked = 0;
+
+    while (sprites_checked < 64) {
+        uint8_t sprite_y  = ppu->oam[(n * 4 + m) % 256];
+        int next_scanline = (ppu->scanline == ppu->scanline_prerender) ? 0 : (ppu->scanline + 1);
         int row_on_scanline = next_scanline - sprite_y - 1;
 
         if (row_on_scanline >= 0 && row_on_scanline < sprite_height) {
-            if (secondary_oam_idx < 8) {
-                memcpy(&ppu->secondary_oam[secondary_oam_idx * 4], &ppu->oam[oam_idx * 4], 4);
-                ppu->secondary_oam_original_indices[secondary_oam_idx] = oam_idx; 
+            for (int b = 0; b < 4; ++b) {
+                ppu->secondary_oam[secondary_oam_idx * 4 + b] = ppu->oam[(n * 4 + m + b) % 256];
+            }
+            ppu->secondary_oam_original_indices[secondary_oam_idx] = n; 
+            secondary_oam_idx++;
+            n = (n + 1) & 63;
+            sprites_checked++;
+            if (secondary_oam_idx == 8) {
+                break;
+            }
+        } else {
+            n = (n + 1) & 63;
+            sprites_checked++;
+        }
+        m = 0;
+    }
 
-                if (oam_idx == 0) {
-                    ppu->sprite_zero_found_for_next_scanline = true; 
-                }
-                secondary_oam_idx++;
-            } else {
+    if (secondary_oam_idx == 8) {
+        m = 0;
+        while (sprites_checked < 64) {
+            uint8_t sprite_y = ppu->oam[(n * 4 + m) % 256];
+            int next_scanline = (ppu->scanline == ppu->scanline_prerender) ? 0 : (ppu->scanline + 1);
+            int row_on_scanline = next_scanline - sprite_y - 1;
+            
+            if (row_on_scanline >= 0 && row_on_scanline < sprite_height) {
                 ppu->status |= PPUSTATUS_SPRITE_OVERFLOW;
-                continue;
+                break;
+            } else {
+                n = (n + 1) & 63;
+                m = (m + 1) & 3;
+                sprites_checked++;
             }
         }
     }
+
     ppu->sprite_count_current_scanline = secondary_oam_idx;
+    ppu->oam_addr = 0; // Reset OAMADDR at cycle 257
 }
 
 static const uint8_t bit_reverse_table[256] = {
@@ -363,18 +366,17 @@ static void fetch_sprite_patterns(PPU *ppu)
 {
     uint8_t sprite_height = (ppu->ctrl & PPUCTRL_SPRITE_SIZE) ? 16 : 8;
 
-    for (int i = 0; i < ppu->sprite_count_current_scanline; ++i) {
+    memset(ppu->scanline_sprite_buffer, 0, sizeof(ppu->scanline_sprite_buffer));
+
+    // Evaluate sprites from back to front (7 down to 0) so that lower-index (higher priority) sprites overwrite higher-index ones.
+    for (int i = ppu->sprite_count_current_scanline - 1; i >= 0; --i) {
         uint8_t sprite_y_oam = ppu->secondary_oam[i * 4 + 0];
         uint8_t tile_id      = ppu->secondary_oam[i * 4 + 1];
         uint8_t attributes   = ppu->secondary_oam[i * 4 + 2];
         uint8_t sprite_x     = ppu->secondary_oam[i * 4 + 3];
+        uint8_t original_oam_index = ppu->secondary_oam_original_indices[i];
 
-        ppu->sprite_shifters[i].x_pos      = sprite_x;
-        ppu->sprite_shifters[i].attributes = attributes;
-        ppu->sprite_shifters[i].original_oam_index =
-            ppu->secondary_oam_original_indices[i]; 
-
-        int next_scanline = (ppu->scanline == ppu->nes->settings.timing.scanline_prerender) ? 0 : (ppu->scanline + 1);
+        int next_scanline = (ppu->scanline == ppu->scanline_prerender) ? 0 : (ppu->scanline + 1);
         int row_in_sprite = next_scanline - sprite_y_oam - 1;
 
         if (attributes & 0x80) { 
@@ -396,14 +398,30 @@ static void fetch_sprite_patterns(PPU *ppu)
         uint8_t pat_low       = ppu_read_vram(ppu, pattern_addr);
         uint8_t pat_high      = ppu_read_vram(ppu, pattern_addr + 8);
 
-        // Bitwise table lookup horizontally flips patterns instantaneously. 
         if (attributes & 0x40) { 
             pat_low  = bit_reverse_table[pat_low];
             pat_high = bit_reverse_table[pat_high];
         }
 
-        ppu->sprite_shifters[i].pattern_low  = pat_low;
-        ppu->sprite_shifters[i].pattern_high = pat_high;
+        bool is_foreground = !(attributes & 0x20);
+        bool is_sprite_0 = (i == 0); // First processed sprite in secondary OAM is "sprite zero"
+        uint8_t palette_base = attributes & 0x03;
+
+        for (int px = 0; px < 8; ++px) {
+            int screen_x = sprite_x + px;
+            if (screen_x > 255) break;
+
+            uint8_t pt_bit0 = (pat_low >> (7 - px)) & 1;
+            uint8_t pt_bit1 = (pat_high >> (7 - px)) & 1;
+            uint8_t current_spr_val = (pt_bit1 << 1) | pt_bit0;
+
+            if (current_spr_val != 0) {
+                ppu->scanline_sprite_buffer[screen_x].palette_idx = (palette_base << 2) + current_spr_val;
+                ppu->scanline_sprite_buffer[screen_x].is_opaque = true;
+                ppu->scanline_sprite_buffer[screen_x].is_foreground = is_foreground;
+                ppu->scanline_sprite_buffer[screen_x].is_sprite_0 = is_sprite_0;
+            }
+        }
     }
 }
 
@@ -450,7 +468,7 @@ void PPU_Reset(PPU *ppu)
     ppu->vram_addr = 0;
     ppu->temp_addr = 0;
 
-    ppu->scanline    = ppu->nes->settings.timing.scanline_prerender;
+    ppu->scanline    = ppu->scanline_prerender;
     ppu->cycle       = 0;
     ppu->frame_odd   = false;
     ppu->frame_count = 0;
@@ -507,6 +525,15 @@ void PPU_Reset(PPU *ppu)
     }
 
     ppu->mirror_mode = MIRROR_HORIZONTAL;
+    PPU_SetMirroring(ppu, ppu->mirror_mode);
+
+    // Cache timing settings for performance
+    if (ppu->nes) {
+        ppu->scanline_prerender = ppu->nes->settings.timing.scanline_prerender;
+        ppu->scanline_vblank = ppu->nes->settings.timing.scanline_vblank;
+        ppu->scanlines_visible = ppu->nes->settings.timing.scanlines_visible;
+        ppu->cycles_per_scanline = ppu->nes->settings.timing.cycles_per_scanline;
+    }
 
     // Precalculate palette lookup mapping explicitly on reset.
     ppu_update_active_palette(ppu);
@@ -522,18 +549,11 @@ uint8_t PPU_ReadRegister(PPU *ppu, uint16_t addr)
    case 0x0002: { // PPUSTATUS ($2002)
         // Check exact timing alignment mapping limits for VBLANK edge suppression 
         bool read_before_vblank = 
-            (ppu->scanline == ppu->nes->settings.timing.scanline_prerender && ppu->cycle >= 339) ||
-            (ppu->scanline == ppu->nes->settings.timing.scanline_vblank && ppu->cycle <= 1);
-            
-        bool read_exactly_on_vblank = 
-            (ppu->scanline == ppu->nes->settings.timing.scanline_vblank && ppu->cycle >= 2 && ppu->cycle <= 3);
+            (ppu->scanline == ppu->scanline_prerender && ppu->cycle >= 339) ||
+            (ppu->scanline == ppu->scanline_vblank && ppu->cycle <= 1);
 
         if (read_before_vblank) {
             ppu->suppress_vblank_start = true;
-        }
-
-        if (read_exactly_on_vblank) {
-            ppu->status &= ~PPUSTATUS_VBLANK;
         }
 
         data = (ppu->status & 0xE0) | (ppu->open_bus & 0x1F);
@@ -602,8 +622,11 @@ void PPU_WriteRegister(PPU *ppu, uint16_t addr, uint8_t value)
         break;
 
     case 0x0004: // OAMDATA ($2004)
-        if (!((ppu->scanline >= 0 && ppu->scanline <= (ppu->nes->settings.timing.scanlines_visible - 1)) &&
+        if (!((ppu->scanline >= 0 && ppu->scanline <= (ppu->scanlines_visible - 1)) &&
               (ppu->cycle >= 1 && ppu->cycle <= 256) && (ppu->mask & (PPUMASK_SHOW_BG | PPUMASK_SHOW_SPRITES)))) {
+            if ((ppu->oam_addr & 0x03) == 0x02) {
+                value &= 0xE3; // Unimplemented bits 2-4 read back as 0
+            }
             ppu->oam[ppu->oam_addr] = value;
         }
         ppu->oam_addr++;
@@ -665,13 +688,46 @@ void PPU_TriggerNMI(PPU *ppu)
 void PPU_SetMirroring(PPU *ppu, MirrorMode mode)
 {
     ppu->mirror_mode = mode;
+    switch (mode) {
+    case MIRROR_HORIZONTAL:
+        ppu->nametable_ptrs[0] = &ppu->vram[0];
+        ppu->nametable_ptrs[1] = &ppu->vram[0];
+        ppu->nametable_ptrs[2] = &ppu->vram[0x0400];
+        ppu->nametable_ptrs[3] = &ppu->vram[0x0400];
+        break;
+    case MIRROR_VERTICAL:
+        ppu->nametable_ptrs[0] = &ppu->vram[0];
+        ppu->nametable_ptrs[1] = &ppu->vram[0x0400];
+        ppu->nametable_ptrs[2] = &ppu->vram[0];
+        ppu->nametable_ptrs[3] = &ppu->vram[0x0400];
+        break;
+    case MIRROR_SINGLE_SCREEN_LOW:
+        ppu->nametable_ptrs[0] = &ppu->vram[0];
+        ppu->nametable_ptrs[1] = &ppu->vram[0];
+        ppu->nametable_ptrs[2] = &ppu->vram[0];
+        ppu->nametable_ptrs[3] = &ppu->vram[0];
+        break;
+    case MIRROR_SINGLE_SCREEN_HIGH:
+        ppu->nametable_ptrs[0] = &ppu->vram[0x0400];
+        ppu->nametable_ptrs[1] = &ppu->vram[0x0400];
+        ppu->nametable_ptrs[2] = &ppu->vram[0x0400];
+        ppu->nametable_ptrs[3] = &ppu->vram[0x0400];
+        break;
+    case MIRROR_FOUR_SCREEN:
+        // cNES doesn't fully support 4-screen external VRAM yet, map all to 0 to prevent crashes
+        ppu->nametable_ptrs[0] = &ppu->vram[0];
+        ppu->nametable_ptrs[1] = &ppu->vram[0];
+        ppu->nametable_ptrs[2] = &ppu->vram[0];
+        ppu->nametable_ptrs[3] = &ppu->vram[0];
+        break;
+    }
 }
 
 void PPU_Step(PPU *ppu)
 {
     bool rendering_enabled = (ppu->mask & PPUMASK_SHOW_BG) || (ppu->mask & PPUMASK_SHOW_SPRITES);
 
-    if (ppu->scanline == ppu->nes->settings.timing.scanline_prerender) { // Pre-render line
+    if (ppu->scanline == ppu->scanline_prerender) { // Pre-render line
         bool first_prerender_cycle = (ppu->cycle == 0) || (ppu->cycle == 1 && ppu->frame_odd && rendering_enabled &&
                                                            (ppu->mask & PPUMASK_SHOW_BG));
         if (first_prerender_cycle) {
@@ -684,11 +740,11 @@ void PPU_Step(PPU *ppu)
         }
     }
 
-    bool is_render_scanline = (ppu->scanline <= (ppu->nes->settings.timing.scanlines_visible - 1)) ||
-                              ppu->scanline == ppu->nes->settings.timing.scanline_prerender;
+    bool is_render_scanline = (ppu->scanline <= (ppu->scanlines_visible - 1)) ||
+                              ppu->scanline == ppu->scanline_prerender;
 
-    // --- Pixel Rendering (Cycles 1-256 of visible scanlines 0-(ppu->nes->settings.timing.scanlines_visible - 1)) ---
-    if (ppu->scanline <= (ppu->nes->settings.timing.scanlines_visible - 1) && ppu->cycle >= 1 && ppu->cycle <= 256) {
+    // --- Pixel Rendering (Cycles 1-256 of visible scanlines 0-(ppu->scanlines_visible - 1)) ---
+    if (ppu->scanline <= (ppu->scanlines_visible - 1) && ppu->cycle >= 1 && ppu->cycle <= 256) {
         int x = ppu->cycle - 1;
         int y = ppu->scanline;
 
@@ -712,7 +768,6 @@ void PPU_Step(PPU *ppu)
                 ppu_palette_read(ppu, (uint16_t)(0x3F00 + (bg_palette_idx << 2) + bg_pixel_pattern_val));
         final_bg_color_idx &= 0x3F;
 
-        uint8_t spr_pixel_pattern_val = 0;
         uint8_t spr_final_color_idx   = 0; 
         bool    spr_is_opaque         = false;
         bool    spr_is_foreground     = true;
@@ -720,40 +775,13 @@ void PPU_Step(PPU *ppu)
         bool sprites_visible_at_pixel = (ppu->mask & PPUMASK_SHOW_SPRITES) && (x >= 8 || (ppu->mask & PPUMASK_CLIP_SPRITES));
         bool sprite_0_opaque_at_pixel = false;
 
-        // Hardware-Accurate Sprite Execution (Shifters and X Counters)
-        if (ppu->mask & PPUMASK_SHOW_SPRITES) {
-            for (int i = 0; i < ppu->sprite_count_current_scanline; ++i) {
-                SpriteShifter *s = &ppu->sprite_shifters[i];
-                
-                // Once an active sprite arrives at its X counter 0, shift it over 8 pixel cycles 
-                if (s->x_pos == 0) {
-                    uint8_t spr_pt_bit0 = (s->pattern_low >> 7) & 1;
-                    uint8_t spr_pt_bit1 = (s->pattern_high >> 7) & 1;
-                    uint8_t current_spr_val = (spr_pt_bit1 << 1) | spr_pt_bit0;
-
-                    if (s->original_oam_index == 0 && current_spr_val != 0) {
-                        sprite_0_opaque_at_pixel = true;
-                    }
-
-                    if (current_spr_val != 0 && !spr_is_opaque) {
-                        if (sprites_visible_at_pixel) {
-                            spr_pixel_pattern_val = current_spr_val;
-                            uint8_t spr_palette_idx_bits = s->attributes & 0x03;
-                            spr_final_color_idx = ppu_palette_read(
-                                ppu, (uint16_t)(0x3F10 + (spr_palette_idx_bits << 2) + spr_pixel_pattern_val));
-                            spr_final_color_idx &= 0x3F;
-
-                            spr_is_opaque     = true;
-                            spr_is_foreground = !(s->attributes & 0x20);
-                        }
-                    }
-
-                    s->pattern_low <<= 1;
-                    s->pattern_high <<= 1;
-                } else {
-                    s->x_pos--;
-                }
-            }
+        if (sprites_visible_at_pixel && ppu->scanline_sprite_buffer[x].is_opaque) {
+            spr_is_opaque = true;
+            spr_is_foreground = ppu->scanline_sprite_buffer[x].is_foreground;
+            sprite_0_opaque_at_pixel = ppu->scanline_sprite_buffer[x].is_sprite_0;
+            
+            spr_final_color_idx = ppu_palette_read(ppu, 0x3F10 + ppu->scanline_sprite_buffer[x].palette_idx);
+            spr_final_color_idx &= 0x3F;
         }
 
         if (sprite_0_opaque_at_pixel && bg_pixel_pattern_val != 0 && bg_visible_at_pixel &&
@@ -765,14 +793,10 @@ void PPU_Step(PPU *ppu)
 
         uint8_t combined_color_idx;
         if (spr_is_opaque) {
-            if (bg_pixel_pattern_val == 0) { 
+            if (bg_pixel_pattern_val == 0 || spr_is_foreground) { 
                 combined_color_idx = spr_final_color_idx;
             } else { 
-                if (spr_is_foreground) {
-                    combined_color_idx = spr_final_color_idx;
-                } else { 
-                    combined_color_idx = final_bg_color_idx;
-                }
+                combined_color_idx = final_bg_color_idx;
             }
         } else { 
             combined_color_idx = final_bg_color_idx;
@@ -817,21 +841,17 @@ void PPU_Step(PPU *ppu)
 
         if (ppu->cycle == 257) {
             copy_horizontal_bits(ppu);
-            if (ppu->scanline <= (ppu->nes->settings.timing.scanlines_visible - 1)) { 
-                evaluate_sprites(ppu);  
-            } else if (ppu->scanline == ppu->nes->settings.timing.scanline_prerender) { 
-                ppu->sprite_count_current_scanline = 0;
-            }
+            evaluate_sprites(ppu);
         }
 
-        if (ppu->cycle == 321 && ppu->scanline <= (ppu->nes->settings.timing.scanlines_visible - 1)) {
+        if (ppu->cycle == 321) {
             fetch_sprite_patterns(ppu); 
         }
     }
 
     bool first_vblank_cycle =
         (ppu->cycle == 0) || (ppu->cycle == 1 && ppu->frame_odd && rendering_enabled && (ppu->mask & PPUMASK_SHOW_BG));
-    if (ppu->scanline == ppu->nes->settings.timing.scanline_vblank && first_vblank_cycle) {
+    if (ppu->scanline == ppu->scanline_vblank && first_vblank_cycle) {
         if (!ppu->suppress_vblank_start) {
             ppu->status |= PPUSTATUS_VBLANK;
             ppu->nmi_occured = true;
@@ -845,12 +865,12 @@ void PPU_Step(PPU *ppu)
         ppu->cycle = 0;
         ppu->scanline++;
 
-        if (ppu->scanline == ppu->nes->settings.timing.scanline_prerender && ppu->frame_odd && rendering_enabled &&
+        if (ppu->scanline == ppu->scanline_prerender && ppu->frame_odd && rendering_enabled &&
             (ppu->mask & PPUMASK_SHOW_BG)) { 
             ppu->cycle = 1;                  
         }
 
-        if (ppu->scanline > ppu->nes->settings.timing.scanline_prerender) {
+        if (ppu->scanline > ppu->scanline_prerender) {
             ppu->scanline  = 0;
             ppu->frame_odd = !ppu->frame_odd;
             ppu->frame_count++;
@@ -897,14 +917,7 @@ const uint8_t *PPU_GetNametable(PPU *ppu, int index)
     if (index < 0 || index > 3) {
         return NULL;
     }
-    uint16_t logical_base_addr = 0x2000 + index * 0x0400;
-    uint16_t physical_addr     = mirror_vram_addr(ppu, logical_base_addr);
-
-    if (physical_addr < PPU_VRAM_SIZE) {
-        return &ppu->vram[physical_addr];
-    }
-
-    return NULL;
+    return ppu->nametable_ptrs[index];
 }
 
 void PPU_GetScanlineCycle(PPU *ppu, int *scanline, int *cycle)

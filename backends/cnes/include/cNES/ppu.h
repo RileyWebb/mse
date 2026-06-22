@@ -64,34 +64,66 @@ typedef struct {
     // Note: Original Y from OAM isn't stored here as row_in_sprite is calculated during fetch
 } SpriteShifter;
 
+typedef struct {
+    uint8_t palette_idx;
+    bool is_foreground;
+    bool is_sprite_0;
+    bool is_opaque;
+} ScanlineSpritePixel;
+
 // PPU State Structure
 typedef struct PPU {
+    // === HOT STATE (Packed for L1 Cache Locality during PPU_Step) ===
+    int   scanline;      // Current scanline being processed (-1/261 for pre-render, 0-239 visible, 240 post, 241-260 VBlank)
+    int   cycle;         // Current PPU clock cycle on the scanline (0-340)
+    
+    // Cached timing constants
+    int scanline_prerender;
+    int scanline_vblank;
+    int scanlines_visible;
+    int cycles_per_scanline;
+    
+    uint16_t vram_addr;  // Current VRAM address (v - 15 bits relevant for PPU bus, holds fine Y)
+    uint8_t  fine_x;     // Fine X scroll (3 bits - used by pixel rendering)
+    uint8_t  mask;       // $2001 PPUMASK
+    uint8_t  ctrl;       // $2000 PPUCTRL
+    uint8_t  status;     // $2002 PPUSTATUS
+    
+    uint16_t bg_pattern_shift_low;   // 16-bit shifter for low plane of 2 background tiles
+    uint16_t bg_pattern_shift_high;  // 16-bit shifter for high plane of 2 background tiles
+    uint16_t bg_attrib_shift_low;    // 16-bit shifter for attribute low bits (repeated for 2 tiles)
+    uint16_t bg_attrib_shift_high;   // 16-bit shifter for attribute high bits (repeated for 2 tiles)
+
+    uint8_t *nametable_ptrs[4]; // O(1) mirroring nametable pointers
+    
+    ScanlineSpritePixel scanline_sprite_buffer[256]; // Pre-calculated scanline sprites
+
+    uint8_t  bg_nt_latch;            // Nametable byte (tile index) latched for current/next tile
+    uint8_t  bg_at_latch_low;        // Attribute palette bits (low bit, expanded to 8 pixels) latched
+    uint8_t  bg_at_latch_high;       // Attribute palette bits (high bit, expanded to 8 pixels) latched
+    uint8_t  bg_pt_low_latch;        // Pattern table low byte latched
+    uint8_t  bg_pt_high_latch;       // Pattern table high byte latched
+
+    // === COLD / WARM STATE ===
     NES *nes; // Pointer to the main NES structure for bus access, callbacks, etc.
 
     // Memory
     uint8_t vram[PPU_VRAM_SIZE];           // Nametable RAM (2KB for 2 nametables)
-    uint8_t palette[PPU_PALETTE_RAM_SIZE]; // Palette RAM (32 bytes) - Renamed from 'palette' to avoid conflict with nes_palette array
+    uint8_t palette[PPU_PALETTE_RAM_SIZE]; // Palette RAM (32 bytes)
     uint8_t oam[PPU_OAM_SIZE];             // Primary OAM (Object Attribute Memory - 256 bytes)
     uint8_t secondary_oam[PPU_SECONDARY_OAM_SIZE]; // Secondary OAM (for sprites on current scanline - 32 bytes)
 
     // Registers
-    uint8_t ctrl;        // $2000 PPUCTRL
-    uint8_t mask;        // $2001 PPUMASK
-    uint8_t status;      // $2002 PPUSTATUS
     uint8_t oam_addr;    // $2003 OAMADDR - OAM address for $2004 access
 
     // VRAM Address/Scroll Registers State (Loopy's t and v, fine_x)
-    uint16_t vram_addr;  // Current VRAM address (v - 15 bits relevant for PPU bus, holds fine Y)
     uint16_t temp_addr;  // Temporary VRAM address (t - used by $2005/$2006, holds fine Y)
-    uint8_t  fine_x;     // Fine X scroll (3 bits - used by pixel rendering)
     uint8_t  addr_latch; // Write toggle for $2005 (PPUSCROLL) & $2006 (PPUADDR) (0: first write, 1: second write)
     uint8_t  data_buffer;// Read buffer for PPUDATA ($2007)
     uint8_t  open_bus;   // Last value on the PPU data bus
     uint64_t open_bus_last_update_ms; // Monotonic timestamp used to decay open bus bits
 
     // Timing and Frame State
-    int   scanline;      // Current scanline being processed (-1/261 for pre-render, 0-239 visible, 240 post, 241-260 VBlank)
-    int   cycle;         // Current PPU clock cycle on the scanline (0-340)
     bool  frame_odd;     // True if the current frame is odd (for cycle skip on pre-render line)
     uint64_t frame_count; // Counts completed PPU frames
 
@@ -101,18 +133,6 @@ typedef struct PPU {
     bool nmi_interrupt_line;  // Actual state of the NMI line to the CPU (true if NMI should be asserted)
     bool previous_nmi_output; // Previous NMI condition used to edge-trigger assertions
     bool suppress_vblank_start; // Set when $2002 is read on the VBlank-set cycle
-
-    // Background Rendering Pipeline State (Latches and Shifters)
-    uint8_t  bg_nt_latch;            // Nametable byte (tile index) latched for current/next tile
-    uint8_t  bg_at_latch_low;        // Attribute palette bits (low bit, expanded to 8 pixels) latched
-    uint8_t  bg_at_latch_high;       // Attribute palette bits (high bit, expanded to 8 pixels) latched
-    uint8_t  bg_pt_low_latch;        // Pattern table low byte latched
-    uint8_t  bg_pt_high_latch;       // Pattern table high byte latched
-
-    uint16_t bg_pattern_shift_low;   // 16-bit shifter for low plane of 2 background tiles
-    uint16_t bg_pattern_shift_high;  // 16-bit shifter for high plane of 2 background tiles
-    uint16_t bg_attrib_shift_low;    // 16-bit shifter for attribute low bits (repeated for 2 tiles)
-    uint16_t bg_attrib_shift_high;   // 16-bit shifter for attribute high bits (repeated for 2 tiles)
 
     // Sprite Rendering State
     uint8_t       sprite_count_current_scanline; // Number of sprites found for the current scanline (in secondary_oam)

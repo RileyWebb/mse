@@ -243,9 +243,6 @@ static inline void apu_dmc_restart(APU_DMCChannel *dmc)
 {
     dmc->current_address = dmc->sample_address;
     dmc->bytes_remaining = dmc->sample_length;
-    dmc->bits_remaining = 8;
-    dmc->sample_buffer_empty = true;
-    dmc->timer = dmc->timer_period > 0 ? (uint16_t)(dmc->timer_period - 1U) : 0;
 }
 
 static inline void apu_clock_dmc(APU *apu)
@@ -263,23 +260,6 @@ static inline void apu_clock_dmc(APU *apu)
     dmc->timer = dmc->timer_period;
 
     if (dmc->bits_remaining == 0) {
-        if (dmc->sample_buffer_empty && dmc->bytes_remaining > 0) {
-            dmc->sample_buffer = BUS_Read(apu->nes, dmc->current_address);
-            dmc->sample_buffer_empty = false;
-            dmc->current_address++;
-            if (dmc->current_address == 0x0000) {
-                dmc->current_address = 0x8000;
-            }
-            dmc->bytes_remaining--;
-            if (dmc->bytes_remaining == 0) {
-                if (dmc->loop) {
-                    apu_dmc_restart(dmc);
-                } else if (dmc->irq_enable) {
-                    dmc->irq_flag = true;
-                }
-            }
-        }
-
         if (!dmc->sample_buffer_empty) {
             dmc->shift_register = dmc->sample_buffer;
             dmc->sample_buffer_empty = true;
@@ -422,6 +402,7 @@ void APU_Reset(APU *apu)
 
     apu->nes = nes;
     apu->output_volume = volume > 0.0f ? volume : 1.0f;
+    apu->next_dmc_dma_cycle = UINT64_MAX;
     apu->cycles_per_sample = 0.0;
     apu->sample_cycle_accumulator = 0.0;
     apu->frame_mode_five_step = false;
@@ -450,6 +431,65 @@ void APU_CatchUp(APU *apu)
         uint32_t diff = (uint32_t)(apu->nes->cpu->total_cycles - apu->cpu_cycle_counter);
         APU_Clock(apu, diff);
     }
+}
+
+static void APU_RecalculateDMCPrediction(APU *apu) {
+    APU_DMCChannel *dmc = &apu->dmc;
+    if (dmc->enabled && dmc->bytes_remaining > 0) {
+        if (dmc->sample_buffer_empty) {
+            apu->next_dmc_dma_cycle = apu->nes->cpu->total_cycles;
+        } else {
+            uint32_t apu_cycles_until_empty = dmc->timer;
+            if (dmc->bits_remaining > 0) {
+                apu_cycles_until_empty += dmc->bits_remaining * dmc->timer_period;
+            }
+            uint64_t next_cycle = apu->nes->cpu->total_cycles + (2 * apu_cycles_until_empty);
+            if (next_cycle <= apu->nes->cpu->total_cycles) {
+                next_cycle = apu->nes->cpu->total_cycles + 1;
+            }
+            apu->next_dmc_dma_cycle = next_cycle;
+        }
+    } else {
+        apu->next_dmc_dma_cycle = UINT64_MAX;
+    }
+}
+
+void APU_HandleDMCDMA(struct NES *nes) {
+    APU *apu = nes->apu;
+    if (!apu) return;
+    
+    APU_DMCChannel *dmc = &apu->dmc;
+
+    APU_CatchUp(apu);
+
+    if (!dmc->enabled || dmc->bytes_remaining == 0 || !dmc->sample_buffer_empty) {
+        APU_RecalculateDMCPrediction(apu);
+        return;
+    }
+
+    nes->cpu->total_cycles += 4; // CPU stalls for DMA
+
+    // Prevent recursive DMA trigger during BUS_Read
+    apu->next_dmc_dma_cycle = UINT64_MAX;
+
+    dmc->sample_buffer = BUS_Read(nes, dmc->current_address);
+    dmc->sample_buffer_empty = false;
+
+    dmc->current_address++;
+    if (dmc->current_address == 0x0000) {
+        dmc->current_address = 0x8000;
+    }
+    dmc->bytes_remaining--;
+
+    if (dmc->bytes_remaining == 0) {
+        if (dmc->loop) {
+            apu_dmc_restart(dmc);
+        } else if (dmc->irq_enable) {
+            dmc->irq_flag = true;
+        }
+    }
+
+    APU_RecalculateDMCPrediction(apu);
 }
 
 void APU_SetVolume(APU *apu, float volume)
@@ -682,4 +722,5 @@ void APU_WriteRegister(APU *apu, uint16_t addr, uint8_t value)
         default:
             break;
     }
+    APU_RecalculateDMCPrediction(apu);
 }

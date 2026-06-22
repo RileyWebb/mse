@@ -22,7 +22,7 @@ endif()
 
 target_compile_definitions(cnes_backend PRIVATE LIBMSE_EXPORTS)
 # Link against libmse to provide DEBUG_WriteLog and other core symbols
-target_link_libraries(cnes_backend PRIVATE libmse)
+target_link_libraries(cnes_backend PRIVATE libmse pthread)
 
 if(NOT WIN32)
     target_link_libraries(cnes_backend PRIVATE m)

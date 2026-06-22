@@ -63,6 +63,7 @@ typedef struct NES_Settings {
     float frame_time; // Target frame time in milliseconds (e.g., 16.67ms for 60Hz)
 
     bool break_on_illegal; // CPU setting: break on illegal instructions
+    bool enable_catch_up; // Enable Catch-up rendering (lazy evaluation)
 } NES_Settings;
 
 typedef struct NES {

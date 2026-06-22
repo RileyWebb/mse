@@ -154,6 +154,8 @@ target_link_libraries(cimgui PRIVATE stdc++ m)
 
 set_target_properties(cimgui PROPERTIES PREFIX "")
 
+set(CIMGUI_OUTPUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/cimgui/generator/output" CACHE PATH "Directory for generated cimgui Lua definitions" FORCE)
+
 #CIMPLOT
 project(cimplot LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 11)
@@ -175,3 +177,5 @@ target_include_directories(cimplot PRIVATE cimgui/imgui)
 target_link_libraries(cimplot PUBLIC cimgui imgui SDL3-shared)
 
 set_target_properties(cimplot PROPERTIES PREFIX "")
+
+set(CIMPLOT_OUTPUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/cimplot/generator/output" CACHE PATH "Directory for generated cimplot Lua definitions" FORCE)
