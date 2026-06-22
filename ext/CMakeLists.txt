@@ -54,13 +54,6 @@ if(TARGET buildvm)
     )
 endif()
 
-if(TARGET luajit)
-    set_target_properties(luajit PROPERTIES 
-        EXCLUDE_FROM_ALL TRUE
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/host_tools"
-    )
-endif()
-
 set(USE_LUAJIT 1 CACHE BOOL "Enable LuaJIT scripting" FORCE)
 set(LUA_LIBS luajit::lib CACHE STRING "Lua libraries to link" FORCE)
 set(LUA_INCLUDE "${LUAJIT_SOURCE_DIR}/src" CACHE STRING "Lua include directory" FORCE)
