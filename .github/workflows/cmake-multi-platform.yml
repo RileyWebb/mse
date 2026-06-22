@@ -1,101 +1,111 @@
-# This starter workflow is for a CMake project running on a single platform. 
-# There is a different starter workflow if you need cross-platform coverage. 
-# See: https://github.com/actions/starter-workflows/blob/main/ci/cmake-multi-platform.yml 
-name: CMake Build 
+# This starter workflow is for a CMake project running on a single platform. There is a different starter workflow if you need cross-platform coverage.
+# See: https://github.com/actions/starter-workflows/blob/main/ci/cmake-multi-platform.yml
+name: CMake Build
 
-on: 
-  push: 
-    branches: [ "master" ] 
-  pull_request: 
-    branches: [ "master" ] 
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
 
-env: 
-  # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.) 
-  BUILD_TYPE: RelWithDebInfo 
+env:
+  # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
+  BUILD_TYPE: RelWithDebInfo
 
-jobs: 
-  build: 
-    runs-on: ${{ matrix.os }} 
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
 
-    strategy: 
-      # Set fail-fast to false to ensure that feedback is delivered for all matrix combinations. 
-      # Consider changing this to true when your workflow is stable. 
-      fail-fast: false 
+    strategy:
+      # Set fail-fast to false to ensure that feedback is delivered for all matrix combinations. Consider changing this to true when your workflow is stable.
+      fail-fast: false
 
-      # Set up a matrix to run the following configurations: 
-      matrix: 
-        os: [ubuntu-latest, windows-2025] 
-        build_type: [RelWithDebInfo] 
-        c_compiler: [gcc] 
-        include: 
-          - os: windows-2025 
-            c_compiler: gcc 
-            cpp_compiler: g++ 
-            generator: '-G "MinGW Makefiles"' 
-          - os: ubuntu-latest 
-            c_compiler: gcc 
-            cpp_compiler: g++ 
-            generator: '' 
+      # Set up a matrix to run the following 3 configurations:
+      # 1. <Windows, RelWithDebInfo, latest MSVC compiler toolchain on the default runner image, default generator>
+      # 2. <Linux, RelWithDebInfo, latest GCC compiler toolchain on the default runner image, default generator>
+      # 3. <Linux, RelWithDebInfo, latest Clang compiler toolchain on the default runner image, default generator>
+      matrix:
+        os: [ubuntu-latest, windows-2025]
+        build_type: [RelWithDebInfo]
+        c_compiler: [gcc]
+        include:
+          - os: windows-2025
+            c_compiler: gcc
+            cpp_compiler: g++
+            generator: '-G "MinGW Makefiles"'
+          - os: ubuntu-latest
+            c_compiler: gcc
+            cpp_compiler: g++
+            generator: ''
 
-    steps: 
-    # 1. ALWAYS CHECKOUT CODE FIRST 
-    - uses: actions/checkout@v4 
-      with: 
-        submodules: 'recursive' 
-        
-    - name: Setup CMake 
-      uses: jwlawson/actions-setup-cmake@v2 
-      with: 
-        cmake-version: '4.1.0' 
+    steps:
+    # 1. ALWAYS CHECKOUT CODE FIRST
+    - uses: actions/checkout@v4
+      with:
+        submodules: 'recursive'
+      
+    - name: Setup CMake
+      uses: jwlawson/actions-setup-cmake@v2
+      with:
+        cmake-version: '4.1.0'
 
-    - name: Set up MinGW 
-      if: runner.os == 'Windows' 
-      uses: egor-tensin/setup-mingw@v3 
-      with: 
-        platform: x64 
+    - name: Set up MinGW
+      if: runner.os == 'Windows'
+      uses: egor-tensin/setup-mingw@v3
+      with:
+        platform: x64
 
-    - name: Install Full Vulkan SDK (Windows) 
-      if: runner.os == 'Windows' 
-      uses: humbletim/install-vulkan-sdk@v1.2 
-      with: 
-        version: latest 
-        cache: true 
+    - name: Install Full Vulkan SDK (Windows)
+      if: runner.os == 'Windows'
+      uses: humbletim/install-vulkan-sdk@v1.2
+      with:
+        version: latest
+        cache: true
 
-    - name: Install Dependencies 
-      if: runner.os == 'Linux' 
-      run: | 
-        sudo apt-get update 
-        sudo apt-get install -y \ 
-          libx11-dev \ 
-          libxcursor-dev \ 
-          libxinerama-dev \ 
-          libxrandr-dev \ 
-          libxi-dev \ 
-          libxss-dev \ 
-          libxxf86vm-dev \ 
-          libxtst-dev \ 
-          libwayland-dev \ 
-          libxkbcommon-dev \ 
-          wayland-protocols \ 
-          libwayland-bin \ 
-          luajit \ 
-          libluajit-5.1-dev \ 
-          glslc 
+    #- name: Set up MSVC Developer Command Prompt
+    #  if: runner.os == 'Windows'
+    #  uses: step-security/msvc-dev-cmd@v1
 
-    - name: Prepare Vulkan SDK 
-      uses: humbletim/setup-vulkan-sdk@v1.2.1 
-      with: 
-        vulkan-query-version: 1.4.304.1 
-        vulkan-components: Vulkan-Headers, Vulkan-Loader 
-        vulkan-use-cache: true 
+    #- name: Install LuaJIT (Windows)
+    #  if: runner.os == 'Windows'
+    #  uses: leafo/gh-actions-lua@v10
+    #  with:
+    #    luaVersion: "luajit-2.1.0-beta3"
 
-    - name: Set reusable strings 
-      id: strings 
-      shell: bash 
-      run: | 
-        echo "build-output-dir=${{ github.workspace }}/build" >> "$GITHUB_OUTPUT" 
+    - name: Install Dependencies
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          libx11-dev \
+          libxcursor-dev \
+          libxinerama-dev \
+          libxrandr-dev \
+          libxi-dev \
+          libxss-dev \
+          libxxf86vm-dev \
+          libxtst-dev \
+          libwayland-dev \
+          libxkbcommon-dev \
+          wayland-protocols \
+          libwayland-bin \
+          luajit \
+          libluajit-5.1-dev \
+          glslc
 
-    # --- ADDED CCACHE SETUP HERE ---
+    - name: Prepare Vulkan SDK
+      uses: humbletim/setup-vulkan-sdk@v1.2.1
+      with:
+        vulkan-query-version: 1.4.304.1
+        vulkan-components: Vulkan-Headers, Vulkan-Loader
+        vulkan-use-cache: true
+
+    - name: Set reusable strings
+      id: strings
+      shell: bash
+      run: |
+        echo "build-output-dir=${{ github.workspace }}/build" >> "$GITHUB_OUTPUT"
+
     - name: Setup ccache
       uses: hendrikmuhs/ccache-action@v1.2
       with:
@@ -116,11 +126,11 @@ jobs:
         -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} 
         -S "${{ github.workspace }}"
 
-    - name: Build 
-      run: cmake --build ${{ steps.strings.outputs.build-output-dir }} --config ${{ matrix.build_type }} 
-        
-    - name: Upload 
-      uses: actions/upload-artifact@v4 
-      with: 
-        name: mse-${{ matrix.os }}-${{ matrix.c_compiler }} 
+    - name: Build
+      run: cmake --build ${{ steps.strings.outputs.build-output-dir }} --config ${{ matrix.build_type }}
+      
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: mse-${{ matrix.os }}-${{ matrix.c_compiler }}
         path: ${{ github.workspace }}/bin
