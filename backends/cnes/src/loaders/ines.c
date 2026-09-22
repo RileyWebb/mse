@@ -60,11 +60,17 @@ static ROM *INES_LoadFromBuffer(uint8_t *data, size_t size, const char *path)
 
     if (memcmp(rom->header, "NES\x1A", 4) == 0) {
         rom->format = ((rom->header[7] & 0x0C) == 0x08) ? ROM_FORMAT_NES20 : ROM_FORMAT_INES;
-        rom->mapper_id = (uint8_t)(((rom->header[8] & 0x0F) << 8) |
-                                   (rom->header[7] & 0xF0) |
-                                   ((rom->header[6] & 0xF0) >> 4));
+
+        // Low two nibbles come from bytes 6 and 7 in both formats. The third
+        // nibble lives in byte 8 and is NES 2.0 only -- in plain iNES that byte
+        // is the PRG-RAM size and must not be folded in. This used to assemble
+        // all twelve bits and then truncate the result to eight, so every NES 2.0
+        // mapper above 255 silently loaded as the wrong mapper.
+        rom->mapper_id = (uint16_t)((rom->header[7] & 0xF0) | ((rom->header[6] & 0xF0) >> 4));
 
         if (rom->format == ROM_FORMAT_NES20) {
+            rom->mapper_id |= (uint16_t)(rom->header[8] & 0x0F) << 8;
+
             uint16_t prg_msb = rom->header[9] & 0x0F;
             if (prg_msb == 0x0F) {
                 uint8_t exponent = (rom->header[4] >> 2) & 0x3F;
@@ -87,6 +93,7 @@ static ROM *INES_LoadFromBuffer(uint8_t *data, size_t size, const char *path)
             rom->chr_rom_size = (size_t)rom->header[5] * 0x2000u;
         }
 
+        rom->has_battery  = (rom->header[6] & 0x02u) != 0;
         rom->trainer_size = (rom->header[6] & 0x04u) ? 512u : 0u;
         rom->prg_rom_offset = 16u + rom->trainer_size;
         rom->chr_rom_offset = rom->prg_rom_offset + rom->prg_rom_size;

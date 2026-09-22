@@ -1,0 +1,9 @@
+# Recorded results for AccuracyCoin page 10
+# Regenerate with: --arg update_baseline=1
+# A test fails when an entry recorded PASS here stops passing.
+FAIL	page 10/$93   SHA INDIRECT,Y
+FAIL	page 10/$9F   SHA ABSOLUTE,Y
+FAIL	page 10/$9B   SHS ABSOLUTE,Y
+FAIL	page 10/$9C   SHY ABSOLUTE,X
+FAIL	page 10/$9E   SHX ABSOLUTE,Y
+PASS	page 10/$BB   LAE ABSOLUTE,Y

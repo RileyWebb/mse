@@ -1,0 +1,12 @@
+# Recorded results for AccuracyCoin page 14
+# Regenerate with: --arg update_baseline=1
+# A test fails when an entry recorded PASS here stops passing.
+FAIL	page 14/LENGTH COUNTER
+FAIL	page 14/LENGTH TABLE
+FAIL	page 14/FRAME COUNTER IRQ
+FAIL	page 14/FRAME COUNTER 4-STEP
+FAIL	page 14/FRAME COUNTER 5-STEP
+FAIL	page 14/DELTA MODULATION CHANNEL
+FAIL	page 14/APU REGISTER ACTIVATION
+FAIL	page 14/CONTROLLER STROBING
+FAIL	page 14/CONTROLLER CLOCKING

@@ -1,0 +1,10 @@
+# Recorded results for AccuracyCoin page 17
+# Regenerate with: --arg update_baseline=1
+# A test fails when an entry recorded PASS here stops passing.
+PASS	page 17/VBLANK BEGINNING
+PASS	page 17/VBLANK END
+FAIL	page 17/NMI CONTROL
+FAIL	page 17/NMI TIMING
+FAIL	page 17/NMI SUPPRESSION
+FAIL	page 17/NMI AT VBLANK END
+FAIL	page 17/NMI DISABLED AT VBLANK

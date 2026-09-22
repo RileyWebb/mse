@@ -1,6 +1,10 @@
 #ifndef CNES_UTIL_H
 #define CNES_UTIL_H
 
+// Everything here is `static inline`. A bare `inline` in C -- unlike C++ --
+// provides only an inline definition and no external one, so a build that
+// chooses not to inline (any -O0 build) fails to link.
+
 #include <stdlib.h>
 #include <stddef.h>
 
@@ -12,7 +16,7 @@
     #include <xmmintrin.h> // SSE
 #endif
 
-inline void *UTIL_aligned_alloc(size_t alignment, size_t size) {
+static inline void *UTIL_aligned_alloc(size_t alignment, size_t size) {
 #if defined(_MSC_VER) || defined(__MINGW32__) || defined(__MINGW64__) // Windows APIs (MSVC & MinGW)
 
     return _aligned_malloc(size, alignment);
@@ -33,7 +37,7 @@ inline void *UTIL_aligned_alloc(size_t alignment, size_t size) {
 #endif
 }
 
-inline void UTIL_aligned_free(void *ptr) {
+static inline void UTIL_aligned_free(void *ptr) {
     if (!ptr) return;
 
 #if defined(_MSC_VER) || defined(__MINGW32__) || defined(__MINGW64__)
@@ -47,7 +51,7 @@ inline void UTIL_aligned_free(void *ptr) {
 #endif
 }
 
-inline float UTIL_clampf(float val, float min_val, float max_val) {
+static inline float UTIL_clampf(float val, float min_val, float max_val) {
 #if defined(__SSE2__) || defined(_M_AMD64) || defined(_M_X64) || (_M_IX86_FP >= 2)
     // SSE intrinsics compile directly to native MAXSS and MINSS instructions
     _mm_store_ss(&val, _mm_min_ss(_mm_max_ss(_mm_set_ss(val), _mm_set_ss(min_val)), _mm_set_ss(max_val)));
@@ -58,7 +62,7 @@ inline float UTIL_clampf(float val, float min_val, float max_val) {
 #endif
 }
 
-inline double UTIL_clampd(double val, double min_val, double max_val) {
+static inline double UTIL_clampd(double val, double min_val, double max_val) {
 #if defined(__SSE2__) || defined(_M_AMD64) || defined(_M_X64) || (_M_IX86_FP >= 2)
     _mm_store_sd(&val, _mm_min_sd(_mm_max_sd(_mm_set_sd(val), _mm_set_sd(min_val)), _mm_set_sd(max_val)));
     return val;
@@ -67,7 +71,7 @@ inline double UTIL_clampd(double val, double min_val, double max_val) {
 #endif
 }
 
-inline void UTIL_fast_clampf_array(float* __restrict src, float* __restrict dest, size_t count, float min_val, float max_val) {
+static inline void UTIL_fast_clampf_array(float* __restrict src, float* __restrict dest, size_t count, float min_val, float max_val) {
     size_t i = 0;
 
 #if defined(__AVX2__)
@@ -99,7 +103,7 @@ inline void UTIL_fast_clampf_array(float* __restrict src, float* __restrict dest
     }
 }
 
-inline void UTIL_clampd_array(double* __restrict src, double* __restrict dest, size_t count, double min_val, double max_val) {
+static inline void UTIL_clampd_array(double* __restrict src, double* __restrict dest, size_t count, double min_val, double max_val) {
     size_t i = 0;
 
 #if defined(__AVX2__)

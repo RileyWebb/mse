@@ -19,20 +19,10 @@ typedef enum {
     NES_REGION_CUSTOM   // Custom timing overrides
 } NES_Region;
 
+// Only settings the core actually reads live here. It used to also carry
+// cpu_mode, ppu_mode (with JIT and ACCELERATED options), break_on_illegal,
+// turbo_rate, and video saturation/hue -- none of which anything consulted.
 typedef struct NES_Settings {
-    enum {
-        NES_CPU_MODE_JIT,
-        NES_CPU_MODE_INTERPRETER,
-        NES_CPU_MODE_DEBUG,
-    } cpu_mode; // CPU emulation setting
-
-    enum {
-        NES_PPU_MODE_JIT,
-        NES_PPU_MODE_INTERPRETER,
-        NES_PPU_MODE_ACCELERATED,
-        NES_PPU_MODE_DEBUG,
-    } ppu_mode; // PPU emulation setting
-
     NES_Region region;
 
     struct {
@@ -44,9 +34,7 @@ typedef struct NES_Settings {
     } timing;
 
     struct {
-        uint32_t palette[64]; // 64 colors, 4 bytes each (ABGR)
-        float saturation;          // example factors for UI to control if needed
-        float hue;
+        uint32_t palette[64]; // 64 colors, 0xAABBGGRR (R,G,B,A in memory)
     } video;
 
     struct {
@@ -55,15 +43,10 @@ typedef struct NES_Settings {
     } audio;
 
     struct {
-        int turbo_rate; // 0 = Disabled, 1 = Slow, 2 = Medium, 3 = Fast
         float actuation_threshold; // For analog input, if implemented in the future
     } input;
 
-    //temp
     float frame_time; // Target frame time in milliseconds (e.g., 16.67ms for 60Hz)
-
-    bool break_on_illegal; // CPU setting: break on illegal instructions
-    bool enable_catch_up; // Enable Catch-up rendering (lazy evaluation)
 } NES_Settings;
 
 typedef struct NES {
@@ -82,7 +65,7 @@ typedef struct NES {
     NES_Settings settings; // Emulator settings, region logic, variable clocks
 } NES;
 
-NES *NES_Create();
+NES *NES_Create(void);
 int NES_Load(NES* nes, ROM* rom);
 void NES_Destroy(NES* nes);
 
@@ -99,5 +82,37 @@ uint8_t NES_PollController(NES* nes, int controller);
 
 // Set controller state (for UI or platform layer to update controller state in NES struct)
 void NES_SetController(NES* nes, int controller, uint8_t state);
+
+// Cartridge RAM, for hosts that want to persist battery-backed saves. The core
+// deliberately does no file I/O of its own -- it does not get to pick where a
+// save lives. Returns NULL when the cartridge has no RAM at $6000-$7FFF.
+uint8_t *NES_GetCartridgeRam(NES *nes, size_t *size_out);
+bool NES_CartridgeRamIsBatteryBacked(const NES *nes);
+bool NES_CartridgeRamIsDirty(const NES *nes);
+void NES_ClearCartridgeRamDirty(NES *nes);
+
+// --- Controller shift registers ---
+// Shared by the live bus read and by BUS_Peek so the two cannot disagree; the
+// peek path used to reimplement this and dropped the open-bus bits.
+static inline uint8_t NES_ControllerPeek(const NES *nes, int port)
+{
+    if (nes->controller_strobe) {
+        return nes->controllers[port] & 0x01;
+    }
+    return nes->controller_shift[port] & 0x01;
+}
+
+static inline uint8_t NES_ControllerRead(NES *nes, int port)
+{
+    if (nes->controller_strobe) {
+        return nes->controllers[port] & 0x01;
+    }
+
+    uint8_t bit = nes->controller_shift[port] & 0x01;
+    // Shift ones in behind the button data so that the ninth and later reads
+    // return 1, the way the hardware's open shift register does.
+    nes->controller_shift[port] = (uint8_t)((nes->controller_shift[port] >> 1) | 0x80);
+    return bit;
+}
 
 #endif // NES_H

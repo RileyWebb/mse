@@ -6,25 +6,59 @@
 #include "cNES/cpu.h"
 
 // BUS_Peek is for debuggers/tools that need to read memory without side effects.
+//
+// BUS_Read cannot stand in for it: reading $2002 clears the VBlank flag and
+// resets the write latch, $2007 advances the VRAM address, and $4016 clocks the
+// controller shift register. Opening a memory viewer must not change what the
+// ROM sees, so each region is read from its backing store instead.
+//
+// The NULL guards are not paranoia: this is called from the debug API, which
+// can be pointed at the console before a ROM has been loaded into it.
 uint8_t BUS_Peek(NES *nes, uint16_t address)
 {
     if (address < 0x2000) {
-        return nes->bus->memory[address & 0x07FF];
-    } else if (address >= 0x2000 && address < 0x4000) {
-        return PPU_GetOpenBusWithDecay(nes->ppu);
-    } else if (address == 0x4016) {
-        int controller_idx = 0;
-        return nes->controller_shift[controller_idx] & 0x01;
-    } else if (address == 0x4017) {
-        int controller_idx = 1;
-        return nes->controller_shift[controller_idx] & 0x01;
-    } else if (address >= 0x4000 && address < 0x4020) {
-        return 0;
-    } else if (address >= 0x6000) {
-        NES_MapperInfo mapper = NES_Mapper_Get(nes->bus->mapper);
-        return mapper.cpu_read(nes->bus, address);
+        return nes->bus->ram[address & (BUS_RAM_SIZE - 1)];
     }
-    return 0;
+
+    if (address < 0x4000) {
+        PPU *ppu = nes->ppu;
+        if (ppu == NULL) {
+            return 0;
+        }
+        // Only these three read back without consequence. The rest are
+        // write-only latches, so report the PPU's open bus as hardware would.
+        //
+        // Deliberately not PPU_GetOpenBusWithDecay: applying the decay writes
+        // ppu->open_bus, which is exactly the kind of side effect this function
+        // exists to avoid. A peek can therefore report an open bus value that
+        // the next real read would have already decayed to zero.
+        switch (0x2000 + (address & 0x0007)) {
+            case 0x2002: return ppu->status;
+            case 0x2004: return ppu->oam[ppu->oam_addr];
+            case 0x2007: return ppu->data_buffer;
+            default:     return ppu->open_bus;
+        }
+    }
+
+    if (address == 0x4016 || address == 0x4017) {
+        // Same shift-register semantics as the live read, minus the shift.
+        return NES_ControllerPeek(nes, address & 1) | (uint8_t)(nes->cpu_open_bus & 0xFE);
+    }
+
+    // The rest of the APU/IO block acknowledges IRQs when read for real, so
+    // report open bus rather than disturb anything.
+    if (address < 0x4020) {
+        return BUS_GetOpenBus(nes);
+    }
+
+    // $4020 up is the cartridge. A mapper's cpu_read is the only way to see
+    // its registers, and is where a peek stops being provably free of side
+    // effects -- a mapper whose read ports latch something will still latch it.
+    const NES_MapperInfo *mapper = nes->bus->mapper_info;
+    if (mapper == NULL || mapper->cpu_read == NULL) {
+        return 0;
+    }
+    return mapper->cpu_read(nes->bus, address);
 }
 
 void BUS_Write(NES *nes, uint16_t address, uint8_t value)
@@ -37,7 +71,7 @@ void BUS_Write(NES *nes, uint16_t address, uint8_t value)
     BUS_DriveOpenBus(nes, value);
 
     if (address < 0x2000) { // Internal RAM
-        nes->bus->memory[address & 0x07FF] = value;
+        nes->bus->ram[address & (BUS_RAM_SIZE - 1)] = value;
     } else if (address >= 0x2000 && address < 0x4000) { // PPU Registers
         // PPU_WriteRegister internally calls PPU_CatchUp
         PPU_WriteRegister(nes->ppu, 0x2000 + (address & 0x0007), value);
@@ -46,20 +80,34 @@ void BUS_Write(NES *nes, uint16_t address, uint8_t value)
 
         PPU_DriveOpenBus(nes->ppu, value);
 
-        uint16_t dma_page_addr  = (uint16_t)value << 8;
-        uint8_t  oam_start_addr = nes->ppu->oam_addr; 
+        const uint16_t dma_page_addr  = (uint16_t)value << 8;
+        const uint8_t  oam_start_addr = nes->ppu->oam_addr;
+
+        // The CPU is halted for one cycle, plus a second if the transfer would
+        // otherwise start on a write cycle, and then alternates read and write
+        // for 256 bytes -- 513 or 514 cycles in total.
+        //
+        // These are ticked one at a time rather than charged as a single lump.
+        // With the clock frozen for the whole transfer nothing could ever come
+        // due partway through, so a DMC fetch could never interleave with an
+        // OAM DMA; that is not just a timing inaccuracy, it hangs any ROM that
+        // waits for the two to collide.
+        CPU_DmaHaltCycle(nes->cpu);
+        if (nes->cpu->total_cycles & 1u) {
+            CPU_DmaHaltCycle(nes->cpu);
+        }
 
         for (uint16_t i = 0; i < 256; ++i) {
-            uint8_t byte_to_write                      = BUS_Read(nes, dma_page_addr + i);
+            CPU_DmaHaltCycle(nes->cpu); // read cycle
+            uint8_t byte_to_write = BUS_Read(nes, (uint16_t)(dma_page_addr + i));
+
+            CPU_DmaHaltCycle(nes->cpu); // write cycle
             nes->ppu->oam[(oam_start_addr + i) & 0xFF] = byte_to_write;
         }
 
-        // Account for OAM DMA cycles in runahead model
-        nes->cpu->total_cycles += 513;
-        
         // Fast-forward PPU one more time to digest DMA delay immediately
         PPU_CatchUp(nes->ppu);
-        
+
     } else if (address == 0x4016) { // Controller Strobe
         nes->controller_strobe = value & 0x01;
         if (nes->controller_strobe == 0) {
@@ -71,8 +119,7 @@ void BUS_Write(NES *nes, uint16_t address, uint8_t value)
             APU_WriteRegister(nes->apu, address, value);
         }
     } else if (address >= 0x6000) {
-        NES_MapperInfo mapper = NES_Mapper_Get(nes->bus->mapper);
-        mapper.cpu_write(nes->bus, address, value);
+        nes->bus->mapper_info->cpu_write(nes->bus, address, value);
     }
 }
 
@@ -89,58 +136,11 @@ void BUS_Write16(NES *nes, uint16_t address, uint16_t value)
 // PPU reads from CHR ROM/RAM
 uint8_t BUS_PPU_ReadCHR(struct BUS *bus_ptr, uint16_t address)
 {
-    NES_MapperInfo mapper = NES_Mapper_Get(bus_ptr->mapper);
-    return mapper.ppu_read(bus_ptr, address);
+    return bus_ptr->mapper_info->ppu_read(bus_ptr, address);
 }
 
 // PPU writes to CHR RAM
 void BUS_PPU_WriteCHR(struct BUS *bus_ptr, uint16_t address, uint8_t value)
 {
-    NES_MapperInfo mapper = NES_Mapper_Get(bus_ptr->mapper);
-    mapper.ppu_write(bus_ptr, address, value);
-}
-
-// PPU reads from VRAM (nametables) and palette RAM
-uint8_t BUS_PPU_Read(struct BUS *bus, uint16_t address)
-{
-    address &= 0x3FFF;
-    if (address < 0x2000) {
-        return BUS_PPU_ReadCHR(bus, address);
-    } else if (address < 0x3F00) {
-        uint16_t vram_addr = (address - 0x2000) & 0x0FFF;
-        return bus->vram[vram_addr];
-    } else if (address < 0x4000) {
-        uint16_t pal_addr = (address - 0x3F00) & 0x1F;
-        return bus->palette[pal_addr];
-    }
-    return 0;
-}
-
-// PPU writes to VRAM (nametables) and palette RAM
-void BUS_PPU_Write(struct BUS *bus, uint16_t address, uint8_t value)
-{
-    address &= 0x3FFF;
-    if (address < 0x2000) {
-        BUS_PPU_WriteCHR(bus, address, value);
-    } else if (address < 0x3F00) {
-        uint16_t vram_addr   = (address - 0x2000) & 0x0FFF;
-        bus->vram[vram_addr] = value;
-    } else if (address < 0x4000) {
-        uint16_t pal_addr      = (address - 0x3F00) & 0x1F;
-        bus->palette[pal_addr] = value;
-    }
-}
-
-uint8_t BUS_GetOpenBus(NES *nes)
-{
-    if (nes->apu && nes->cpu && nes->apu->next_dmc_dma_cycle <= nes->cpu->total_cycles + 8) {
-        uint64_t fast_forward = 0;
-        if (nes->apu->next_dmc_dma_cycle > nes->cpu->total_cycles) {
-            fast_forward = nes->apu->next_dmc_dma_cycle - nes->cpu->total_cycles;
-            nes->cpu->total_cycles += fast_forward;
-        }
-        APU_HandleDMCDMA(nes);
-        nes->cpu->total_cycles -= fast_forward;
-    }
-    return nes->cpu_open_bus;
+    bus_ptr->mapper_info->ppu_write(bus_ptr, address, value);
 }

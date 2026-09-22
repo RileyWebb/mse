@@ -1,0 +1,4 @@
+# How many instructions of nestest.log this core reproduces.
+# Regenerate with: --arg update_baseline=1
+# Full trace is 8991 instructions.
+matched = 8991

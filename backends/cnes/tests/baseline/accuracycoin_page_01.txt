@@ -1,0 +1,12 @@
+# Recorded results for AccuracyCoin page 1
+# Regenerate with: --arg update_baseline=1
+# A test fails when an entry recorded PASS here stops passing.
+PASS	page 01/ROM IS NOT WRITABLE
+PASS	page 01/RAM MIRRORING
+PASS	page 01/PC WRAPAROUND
+PASS	page 01/THE DECIMAL FLAG
+PASS	page 01/THE B FLAG
+FAIL	page 01/DUMMY READ CYCLES
+PASS	page 01/DUMMY WRITE CYCLES
+FAIL	page 01/OPEN BUS
+PASS	page 01/ALL NOP INSTRUCTIONS

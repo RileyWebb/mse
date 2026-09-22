@@ -7,6 +7,15 @@
 
 #include "cNES/palette.h"
 
+// Packs to the layout PALETTE_default uses: 0xAABBGGRR, which is R,G,B,A in
+// memory on a little-endian host. Every loader below funnels through this so a
+// .pal file cannot end up with a different channel order from the built-in
+// palette -- which is exactly what used to happen.
+static inline uint32_t PALETTE_Pack(uint8_t r, uint8_t g, uint8_t b)
+{
+	return ((uint32_t)255u << 24) | ((uint32_t)b << 16) | ((uint32_t)g << 8) | (uint32_t)r;
+}
+
 static void Palette_FillBlack(uint32_t *palette)
 {
 	if (!palette) {
@@ -26,8 +35,8 @@ static bool Palette_ReadRawBinary(FILE *file, uint32_t *out_palette)
 	}
 
 	for (int i = 0; i < 64; ++i) {
-		out_palette[i] = (255 << 24) | ((rgb_buffer[i * 3 + 0] & 0xFF) << 16) | ((rgb_buffer[i * 3 + 1] & 0xFF) << 8) |
-						 (rgb_buffer[i * 3 + 2] & 0xFF);
+		// 0xAABBGGRR, matching PALETTE_default. File order is R,G,B.
+		out_palette[i] = PALETTE_Pack(rgb_buffer[i * 3 + 0], rgb_buffer[i * 3 + 1], rgb_buffer[i * 3 + 2]);
 	}
 	return true;
 }
@@ -93,7 +102,7 @@ uint32_t *PALETTE_Load(const char *filename)
 			if (i < 64) {
 				int r = 0, g = 0, b = 0;
 				if (sscanf(line, "%d %d %d", &r, &g, &b) == 3) {
-					out_palette[i] = (255 << 24) | ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF);
+					out_palette[i] = PALETTE_Pack((uint8_t)r, (uint8_t)g, (uint8_t)b);
 				}
 			}
 		}
@@ -127,8 +136,7 @@ uint32_t *PALETTE_Load(const char *filename)
 					}
 
 					if (i < 64) {
-						out_palette[i] =
-							(255 << 24) | ((rgba[0] & 0xFF) << 16) | ((rgba[1] & 0xFF) << 8) | (rgba[2] & 0xFF);
+						out_palette[i] = PALETTE_Pack(rgba[0], rgba[1], rgba[2]);
 					}
 				}
 

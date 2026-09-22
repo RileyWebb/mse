@@ -11,7 +11,7 @@
 
 #include "frontend_theme.h"
 
-typedef struct mse_backend_s mse_backend_t;
+typedef struct mse_backend_s libmse_backend_t;
 
 typedef struct ImVec2_c ImVec2;
 
@@ -21,8 +21,7 @@ typedef enum mse_frontend_nav_e {
     MSE_FRONTEND_NAV_LIBRARY,
     MSE_FRONTEND_NAV_BACKENDS,
     MSE_FRONTEND_NAV_BIOS,
-    MSE_FRONTEND_NAV_MEMVIEW,
-    MSE_FRONTEND_NAV_LOGS
+    MSE_FRONTEND_NAV_MEMVIEW
 } mse_frontend_nav_t;
 
 typedef enum mse_frontend_settings_tab_e {
@@ -42,7 +41,7 @@ typedef struct mse_frontend_ui_state_s {
     mse_frontend_settings_tab_t settings_tab;
     struct mse_frontend_input_manager_s *input_manager;
 
-    mse_backend_t **backends;
+    libmse_backend_t **backends;
     size_t          backend_count;
 
     bool show_demo_window;
@@ -52,12 +51,19 @@ typedef struct mse_frontend_ui_state_s {
     bool show_about_window;
     bool show_licence_window;
     bool show_credits_window;
-    bool show_terminal;
+    bool show_lua_debugger_window;
+    // int, not bool: these two are bound to cvars, and the cvar system writes
+    // four bytes through the pointer it is given. As bools they clobbered the
+    // flags declared after them -- "set mse_show_terminal 256" in config.cfg
+    // was this bug reading show_profiler as byte 1.
+    int  show_terminal;
+    bool show_profiler;
 
     bool show_power_confirm;
     bool show_installed_only;
     bool core_view_requested;
-    bool fullscreen;
+    int  fullscreen;
+    int selected_lua_worker_idx;
 
     const char *active_backend_name;
     float content_scale;
@@ -81,9 +87,8 @@ void mse_frontend_ui_end_child_window(void);
 bool mse_frontend_ui_sidebar_row(const char *icon, const char *label, bool selected, bool accent);
 
 // log
-typedef struct debug_log_s debug_log;
-void mse_frontend_ui_capture_log(const debug_log *log, void *user_data);
-void mse_frontend_ui_clear_logs(void);
+typedef struct libmse_debug_log_s libmse_debug_log_t;
+void mse_frontend_ui_capture_log(const libmse_debug_log_t *log, void *user_data);
 void mse_frontend_ui_draw_logs_view(void);
 
 // Help/About
@@ -94,8 +99,15 @@ void mse_frontend_ui_draw_credits_modal(mse_frontend_ui_state_t *state);
 
 // Terminal
 void mse_frontend_terminal_init(void);
-void mse_frontend_ui_draw_terminal(mse_frontend_ui_state_t *state);
 void mse_frontend_terminal_log_callback(const char *message);
+void mse_frontend_ui_draw_terminal(mse_frontend_ui_state_t *state);
+
+// Lua
+void mse_frontend_ui_draw_lua_debugger(mse_frontend_ui_state_t *state);
+
+// Library
+void mse_frontend_library_view_draw(mse_frontend_ui_state_t *state);
+void mse_frontend_library_view_init(void);
 
 extern float g_frontend_ui_scale;
 

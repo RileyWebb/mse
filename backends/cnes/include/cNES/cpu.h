@@ -3,8 +3,12 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdbool.h>
 
 typedef struct NES NES;
+typedef struct BUS BUS;
+typedef struct PPU PPU;
+typedef struct APU APU;
 
 #define CPU_FLAG_CARRY     (uint8_t)(1 << 0) // Carry Flag (C)
 #define CPU_FLAG_ZERO      (uint8_t)(1 << 1) // Zero Flag (Z)
@@ -15,25 +19,21 @@ typedef struct NES NES;
 #define CPU_FLAG_OVERFLOW  (uint8_t)(1 << 6) // Overflow Flag (V)
 #define CPU_FLAG_NEGATIVE  (uint8_t)(1 << 7) // Negative Flag (N)
 
-typedef struct CPU_Opcode {
-    enum {
-        CPU_MODE_IMPLIED,
-        CPU_MODE_ACCUMULATOR,
-        CPU_MODE_IMMEDIATE,
-        CPU_MODE_ZERO_PAGE,
-        CPU_MODE_ZERO_PAGE_X,
-        CPU_MODE_ZERO_PAGE_Y,
-        CPU_MODE_RELATIVE,
-        CPU_MODE_ABSOLUTE,
-        CPU_MODE_ABSOLUTE_X,
-        CPU_MODE_ABSOLUTE_Y,
-        CPU_MODE_INDIRECT,
-        CPU_MODE_INDEXED_INDIRECT,
-        CPU_MODE_INDIRECT_INDEXED
-    } addressing_mode;
-    const char mnemonic[5];
-    uint8_t cycles;
-} CPU_Opcode;
+typedef enum CPU_AddressingMode {
+    CPU_MODE_IMP,  // Implied
+    CPU_MODE_ACC,  // Accumulator
+    CPU_MODE_IMM,  // Immediate
+    CPU_MODE_ZP,   // Zero page
+    CPU_MODE_ZPX,  // Zero page,X
+    CPU_MODE_ZPY,  // Zero page,Y
+    CPU_MODE_REL,  // Relative
+    CPU_MODE_ABS,  // Absolute
+    CPU_MODE_ABSX, // Absolute,X
+    CPU_MODE_ABSY, // Absolute,Y
+    CPU_MODE_IND,  // Indirect
+    CPU_MODE_IZX,  // (Indirect,X)
+    CPU_MODE_IZY   // (Indirect),Y
+} CPU_AddressingMode;
 
 typedef struct CPU {
     uint8_t a;  // Accumulator
@@ -44,20 +44,24 @@ typedef struct CPU {
     uint8_t status; // Processor Status
 
     uint64_t total_cycles;
+    uint64_t stall_cycles;
 
-    bool nmi_pending;
+    bool nmi_pending; // Edge latched from the PPU at the end of an instruction
+    bool irq_line;    // Level sampled from the APU at the end of an instruction
 
-    NES* nes; // Pointer to the NES instance
+    bool dummy_read_dma;
+
+    NES* nes;
+    BUS* bus;
+    PPU* ppu;
+    APU* apu;
 } CPU;
-
-extern CPU_Opcode cpu_opcodes[256];
 
 CPU *CPU_Create(NES *nes);
 void CPU_Reset(CPU* cpu);
 int CPU_Step(CPU* cpu);
 void CPU_Destroy(CPU* cpu);
 
-void CPU_Interupt(CPU* cpu);
 void CPU_NMI(CPU* cpu);
 void CPU_IRQ(CPU* cpu);
 
@@ -74,5 +78,13 @@ static inline uint8_t CPU_GetFlag(CPU *cpu, uint8_t flag)
 {
     return (cpu->status & flag);
 }
+
+static inline void CPU_Stall(CPU *cpu, uint64_t cycles)
+{
+    cpu->total_cycles += cycles;
+    cpu->stall_cycles += cycles;
+}
+
+void CPU_DmaHaltCycle(CPU *cpu);
 
 #endif // CPU_H

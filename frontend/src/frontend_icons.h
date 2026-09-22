@@ -31,5 +31,7 @@
 #define MSE_ICON_BIOS "\xE2\xA7\x81"
 #define MSE_ICON_MEMVIEW "\xE2\xA8\xB1"
 #define MSE_ICON_LOGS "\xEF\x83\xB6"
+#define MSE_ICON_ADD "\xEF\x81\xA7"
+#define MSE_ICON_SEARCH "\xEF\x80\x82"
 
 #endif // FRONTEND_ICONS_H

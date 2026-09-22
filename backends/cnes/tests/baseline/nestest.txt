@@ -1,0 +1,5 @@
+# Recorded results for nestest
+# Regenerate with: --arg update_baseline=1
+# A test fails when an entry recorded PASS here stops passing.
+PASS	error byte $02
+PASS	error byte $03

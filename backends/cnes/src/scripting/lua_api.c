@@ -2,7 +2,7 @@
 #include <string.h>
 #include <stdio.h>
 
-#include "debug.h"
+#include "libmse/libmse_debug.h"
 #include "cNES/nes.h"
 #include "cNES/cpu.h"
 #include "cNES/bus.h"
@@ -16,7 +16,12 @@
 #define LUA_AVAILABLE 1
 #else
 // Forward declaration for Lua state
-typedef void lua_State;
+// The real declaration. This used to be `typedef void lua_State;` to dodge a
+// build dependency, which threw away all type safety on the Lua stack and
+// conflicted with backend.c's real <lua.h> in the same library.
+#include <lua.h>
+#include <lauxlib.h>
+#include <lualib.h>
 #define LUA_AVAILABLE 0
 #endif
 
@@ -319,6 +324,114 @@ static int lua_ppu_read_pixel(lua_State* L) {
     return 1;
 }
 
+// Lua API: get CPU stack pointer
+static int lua_get_sp(lua_State* L) {
+    LuaScript* script = lua_get_script(L);
+    if (!script || !script->nes || !script->nes->cpu) {
+        lua_pushinteger(L, 0);
+        return 1;
+    }
+    lua_pushinteger(L, script->nes->cpu->sp);
+    return 1;
+}
+
+// Lua API: get CPU status register
+static int lua_get_status(lua_State* L) {
+    LuaScript* script = lua_get_script(L);
+    if (!script || !script->nes || !script->nes->cpu) {
+        lua_pushinteger(L, 0);
+        return 1;
+    }
+    lua_pushinteger(L, script->nes->cpu->status);
+    return 1;
+}
+
+// Lua API: get total CPU cycles executed since reset
+static int lua_get_cycles(lua_State* L) {
+    LuaScript* script = lua_get_script(L);
+    if (!script || !script->nes || !script->nes->cpu) {
+        lua_pushinteger(L, 0);
+        return 1;
+    }
+    lua_pushinteger(L, (lua_Integer)script->nes->cpu->total_cycles);
+    return 1;
+}
+
+// Lua API: get current PPU scanline and dot as two return values
+static int lua_get_ppu_position(lua_State* L) {
+    LuaScript* script = lua_get_script(L);
+    if (!script || !script->nes || !script->nes->ppu) {
+        lua_pushinteger(L, 0);
+        lua_pushinteger(L, 0);
+        return 2;
+    }
+
+    int scanline = 0;
+    int dot      = 0;
+    PPU_GetScanlineCycle(script->nes->ppu, &scanline, &dot);
+    lua_pushinteger(L, scanline);
+    lua_pushinteger(L, dot);
+    return 2;
+}
+
+// Lua API: execute a single CPU instruction, returning the cycles it consumed
+static int lua_step(lua_State* L) {
+    LuaScript* script = lua_get_script(L);
+    if (!script || !script->nes || !script->nes->cpu) {
+        lua_pushinteger(L, 0);
+        return 1;
+    }
+
+    uint64_t before = script->nes->cpu->total_cycles;
+    NES_Step(script->nes);
+    lua_pushinteger(L, (lua_Integer)(script->nes->cpu->total_cycles - before));
+    return 1;
+}
+
+// Lua API: run whole frames, returning the number actually run
+static int lua_run_frames(lua_State* L) {
+    LuaScript* script = lua_get_script(L);
+    if (!script || !script->nes) {
+        lua_pushinteger(L, 0);
+        return 1;
+    }
+
+    lua_Integer count = luaL_optinteger(L, 1, 1);
+    lua_Integer run   = 0;
+    for (; run < count; ++run) {
+        NES_StepFrame(script->nes);
+    }
+    lua_pushinteger(L, run);
+    return 1;
+}
+
+// Lua API: reset the console
+static int lua_reset(lua_State* L) {
+    LuaScript* script = lua_get_script(L);
+    if (script && script->nes) {
+        NES_Reset(script->nes);
+    }
+    return 0;
+}
+
+// Lua API: read one byte of primary OAM
+static int lua_ppu_read_oam(lua_State* L) {
+    LuaScript* script = lua_get_script(L);
+    if (!script || !script->nes || !script->nes->ppu) {
+        lua_pushinteger(L, 0);
+        return 1;
+    }
+
+    int index = (int)luaL_checkinteger(L, 1);
+    if (index < 0 || index >= PPU_OAM_SIZE) {
+        lua_pushinteger(L, 0);
+        return 1;
+    }
+
+    lua_pushinteger(L, script->nes->ppu->oam[index]);
+    return 1;
+}
+
 // Register Lua API functions
 static void lua_register_api(lua_State* L, LuaScript* script) {
     #define REGISTER_LUA_API(name, fn) \
@@ -359,6 +472,18 @@ static void lua_register_api(lua_State* L, LuaScript* script) {
     // PPU helpers
     REGISTER_LUA_API("ppu_read_nametable", lua_ppu_read_nametable);
     REGISTER_LUA_API("ppu_read_pixel", lua_ppu_read_pixel);
+    REGISTER_LUA_API("ppu_read_oam", lua_ppu_read_oam);
+    REGISTER_LUA_API("get_ppu_position", lua_get_ppu_position);
+
+    // Extended CPU state
+    REGISTER_LUA_API("get_sp", lua_get_sp);
+    REGISTER_LUA_API("get_status", lua_get_status);
+    REGISTER_LUA_API("get_cycles", lua_get_cycles);
+
+    // Execution control
+    REGISTER_LUA_API("step", lua_step);
+    REGISTER_LUA_API("run_frames", lua_run_frames);
+    REGISTER_LUA_API("reset", lua_reset);
 
     #undef REGISTER_LUA_API
 }
@@ -529,3 +654,67 @@ int LuaScript_ExecuteString(LuaScript* script, const char* code) {
 #endif
 }
 
+
+int LuaScript_SetArg(LuaScript* script, const char* key, const char* value) {
+    if (!script || !key) return -1;
+
+#if LUA_AVAILABLE
+    if (!script->L) {
+        snprintf(script->error_buffer, sizeof(script->error_buffer), "Lua state not initialized");
+        return -1;
+    }
+
+    lua_getglobal(script->L, "ARGS");
+    if (!lua_istable(script->L, -1)) {
+        lua_pop(script->L, 1);
+        lua_newtable(script->L);
+        lua_pushvalue(script->L, -1);
+        lua_setglobal(script->L, "ARGS");
+    }
+
+    lua_pushstring(script->L, value ? value : "");
+    lua_setfield(script->L, -2, key);
+    lua_pop(script->L, 1);
+    return 0;
+#else
+    (void)value;
+    return -1;
+#endif
+}
+
+int LuaScript_HasRun(LuaScript* script) {
+    if (!script) return 0;
+
+#if LUA_AVAILABLE
+    if (!script->L) return 0;
+
+    lua_getglobal(script->L, "onrun");
+    int is_function = lua_isfunction(script->L, -1);
+    lua_pop(script->L, 1);
+    return is_function;
+#else
+    return 0;
+#endif
+}
+
+void LuaScript_OnRun(LuaScript* script) {
+    if (!script) return;
+
+#if LUA_AVAILABLE
+    if (!script->L) return;
+
+    lua_getglobal(script->L, "onrun");
+    if (!lua_isfunction(script->L, -1)) {
+        lua_pop(script->L, 1);
+        return;
+    }
+
+    if (lua_pcall(script->L, 0, 0, 0) != 0) {
+        DEBUG_ERROR("Lua onrun error: %s", lua_tostring(script->L, -1));
+        lua_pop(script->L, 1);
+        // A script that blew up has not reported a verdict; make that a failure.
+        script->exit_code   = 2;
+        script->should_exit = 1;
+    }
+#endif
+}

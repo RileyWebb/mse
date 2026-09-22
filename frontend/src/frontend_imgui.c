@@ -37,6 +37,10 @@ static const ImWchar g_body_ranges[] = {
 
 static ImFont *mse_frontend_imgui_add_font(const char *font_path, float size_pixels, const ImWchar *glyph_ranges) {
     ImFontAtlas *atlas = igGetIO_Nil()->Fonts;
+    //ImFontAtlas_SetTexDesiredWidth(atlas, 2048); // Optional: larger texture space
+    // Enable FreeType hinting flags for extra crispness
+    //unsigned int flags = ; 
+    //ImFontAtlas_SetBuilderFlags(atlas, flags);
     return ImFontAtlas_AddFontFromFileTTF(atlas, font_path, size_pixels, NULL, glyph_ranges);
 }
 

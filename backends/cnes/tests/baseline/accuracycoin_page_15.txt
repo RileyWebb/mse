@@ -1,0 +1,8 @@
+# Recorded results for AccuracyCoin page 15
+# Regenerate with: --arg update_baseline=1
+# A test fails when an entry recorded PASS here stops passing.
+SKIP	page 15/PPU RESET FLAG
+SKIP	page 15/CPU RAM
+SKIP	page 15/CPU REGISTERS
+SKIP	page 15/PPU RAM
+SKIP	page 15/PALETTE RAM

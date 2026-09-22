@@ -6,11 +6,20 @@
 #include "frontend_icons.h"
 #include "frontend_app.h"
 #include "libmse/libmse_debug.h"
+
+#include "frontend_lua_ui.h"
+#include "frontend_profiler.h"
 #include "libmse/libmse.h"
 #include "libmse/libmse_version.h"
 #include "libmse/libmse_cvar.h"
+#include "libmse/libmse_db.h"
+#include "libmse/libmse_library.h"
+#include "libmse/libmse_lua.h"
 #include "cimgui_markdown.h"
 #include <SDL3/SDL_dialog.h>
+#include <lua.h>
+#include <lauxlib.h>
+#include <lualib.h>
 #include <math.h>
 #include <stdint.h>
 #include <string.h>
@@ -63,23 +72,15 @@ void mse_frontend_ui_end_child_window(void)
 	igPopStyleVar(3);
 }
 
-static void mse_frontend_ui_draw_sidebar_hover_mouse_effect(ImDrawList *draw_list, ImVec2 item_pos, ImVec2 item_size,
-															float press_offset)
+static void mse_frontend_ui_draw_sidebar_hover_mouse_effect(ImDrawList *draw_list, ImVec2 item_pos, ImVec2 item_size, float press_offset)
 {
-	if (draw_list == NULL) {
-		return;
-	}
-
+	if (draw_list == NULL) return;
 	const ImGuiIO *io = igGetIO_Nil();
-	if (io == NULL) {
-		return;
-	}
+	if (io == NULL) return;
 
 	const ImVec2 mouse = io->MousePos;
-	const ImVec2 effect_min =
-		(ImVec2){item_pos.x + mse_frontend_ui_px(4.0f), item_pos.y + mse_frontend_ui_px(4.0f) + press_offset};
-	const ImVec2 effect_max	   = (ImVec2){item_pos.x + item_size.x - mse_frontend_ui_px(4.0f),
-										  item_pos.y + item_size.y - mse_frontend_ui_px(4.0f) + press_offset};
+	const ImVec2 effect_min = (ImVec2){item_pos.x + mse_frontend_ui_px(4.0f), item_pos.y + mse_frontend_ui_px(4.0f) + press_offset};
+	const ImVec2 effect_max	   = (ImVec2){item_pos.x + item_size.x - mse_frontend_ui_px(4.0f), item_pos.y + item_size.y - mse_frontend_ui_px(4.0f) + press_offset};
 	const ImVec2 effect_center = (ImVec2){mouse.x, mouse.y + press_offset * 0.25f};
 	const float	 time_value	   = (float)igGetTime();
 	const float	 pulse		   = 0.5f + (0.5f * sinf(time_value * 3.6f));
@@ -100,8 +101,7 @@ static void mse_frontend_ui_draw_sidebar_hover_mouse_effect(ImDrawList *draw_lis
 									   igGetColorU32_Vec4((ImVec4){0.84f, 0.76f, 1.0f, 0.0f}));
 	ImDrawList_AddCircleFilled(draw_list, effect_center, radius_glow, glow_col, 32);
 	ImDrawList_AddCircleFilled(draw_list, effect_center, radius_soft, soft_col, 28);
-	ImDrawList_AddCircle(draw_list, effect_center, radius_soft + mse_frontend_ui_px(6.0f), ring_col, 28,
-						 mse_frontend_ui_px(1.0f));
+	ImDrawList_AddCircle(draw_list, effect_center, radius_soft + mse_frontend_ui_px(6.0f), ring_col, 28, mse_frontend_ui_px(1.0f));
 	ImDrawList_AddCircleFilled(draw_list, effect_center, radius_core, core_col, 20);
 	ImDrawList_PopClipRect(draw_list);
 }
@@ -117,7 +117,6 @@ bool mse_frontend_ui_sidebar_row(const char *icon, const char *label, bool selec
 	igPushStyleVar_Float(ImGuiStyleVar_FrameBorderSize, 0.0f);
 
 	if (selected) {
-		/* Disable ImGui built-in selection color — we draw our own background */
 		igPushStyleColor_Vec4(ImGuiCol_Header, (ImVec4){0.0f, 0.0f, 0.0f, 0.0f});
 		igPushStyleColor_Vec4(ImGuiCol_HeaderHovered, (ImVec4){0.0f, 0.0f, 0.0f, 0.0f});
 		igPushStyleColor_Vec4(ImGuiCol_HeaderActive, (ImVec4){0.0f, 0.0f, 0.0f, 0.0f});
@@ -134,31 +133,24 @@ bool mse_frontend_ui_sidebar_row(const char *icon, const char *label, bool selec
 	igPushID_Str(label);
 	bool clicked = igSelectable_Bool("##sidebar_row", selected, ImGuiSelectableFlags_SpanAvailWidth, item_size);
 	igPopID();
+	
 	const bool	row_hovered	 = igIsItemHovered(ImGuiHoveredFlags_RectOnly);
 	const bool	row_active	 = igIsItemActive();
 	const float press_offset = row_active ? mse_frontend_ui_px(1.2f) : 0.0f;
 
-	const ImVec2 row_min =
-		(ImVec2){item_pos.x + mse_frontend_ui_px(4.0f), item_pos.y + mse_frontend_ui_px(4.0f) + press_offset};
-	const ImVec2 row_max	  = (ImVec2){item_pos.x + item_size.x - mse_frontend_ui_px(4.0f),
-										 item_pos.y + item_size.y - mse_frontend_ui_px(4.0f) + press_offset};
+	const ImVec2 row_min = (ImVec2){item_pos.x + mse_frontend_ui_px(4.0f), item_pos.y + mse_frontend_ui_px(4.0f) + press_offset};
+	const ImVec2 row_max	  = (ImVec2){item_pos.x + item_size.x - mse_frontend_ui_px(4.0f), item_pos.y + item_size.y - mse_frontend_ui_px(4.0f) + press_offset};
 	const float	 row_rounding = mse_frontend_ui_px(10.0f);
 
-	/* draw a subtle rounded background and accent treatment */
 	if (selected) {
 		ImU32  bg_col	  = igGetColorU32_Vec4((ImVec4){0.11f, 0.08f, 0.22f, 0.94f});
 		ImU32  bg_glow	  = igGetColorU32_Vec4((ImVec4){0.38f, 0.20f, 0.72f, 0.18f});
 		ImU32  accent_col = igGetColorU32_Vec4((ImVec4){0.75f, 0.58f, 1.0f, 0.98f});
 		ImU32  edge_col	  = igGetColorU32_Vec4((ImVec4){0.68f, 0.52f, 0.98f, 0.34f});
-		ImVec2 a_min =
-			(ImVec2){item_pos.x + mse_frontend_ui_px(2.0f), item_pos.y + mse_frontend_ui_px(8.0f) + press_offset};
-		ImVec2 a_max = (ImVec2){item_pos.x + mse_frontend_ui_px(6.0f),
-								item_pos.y + item_size.y - mse_frontend_ui_px(8.0f) + press_offset};
+		ImVec2 a_min = (ImVec2){item_pos.x + mse_frontend_ui_px(2.0f), item_pos.y + mse_frontend_ui_px(8.0f) + press_offset};
+		ImVec2 a_max = (ImVec2){item_pos.x + mse_frontend_ui_px(6.0f), item_pos.y + item_size.y - mse_frontend_ui_px(8.0f) + press_offset};
 		ImDrawList_AddRectFilled(draw_list, row_min, row_max, bg_col, row_rounding, 0);
-		ImDrawList_AddRectFilledMultiColor(draw_list, (ImVec2){row_min.x, row_min.y},
-										   (ImVec2){row_max.x, row_min.y + (row_max.y - row_min.y) * 0.5f}, bg_glow,
-										   igGetColorU32_Vec4((ImVec4){0.16f, 0.10f, 0.28f, 0.08f}),
-										   igGetColorU32_Vec4((ImVec4){0.16f, 0.10f, 0.28f, 0.02f}), bg_glow);
+		ImDrawList_AddRectFilledMultiColor(draw_list, (ImVec2){row_min.x, row_min.y}, (ImVec2){row_max.x, row_min.y + (row_max.y - row_min.y) * 0.5f}, bg_glow, igGetColorU32_Vec4((ImVec4){0.16f, 0.10f, 0.28f, 0.08f}), igGetColorU32_Vec4((ImVec4){0.16f, 0.10f, 0.28f, 0.02f}), bg_glow);
 		ImDrawList_AddRect(draw_list, row_min, row_max, edge_col, row_rounding, mse_frontend_ui_px(1.0f), 0);
 		ImDrawList_AddRectFilled(draw_list, a_min, a_max, accent_col, mse_frontend_ui_px(3.0f), 0);
 	} else if (row_hovered) {
@@ -170,7 +162,6 @@ bool mse_frontend_ui_sidebar_row(const char *icon, const char *label, bool selec
 	}
 
 	if (row_active) {
-
 		ImU32 pfill = igGetColorU32_Vec4((ImVec4){0.70f, 0.52f, 1.0f, 0.16f});
 		ImU32 pedge = igGetColorU32_Vec4((ImVec4){0.84f, 0.70f, 1.0f, 0.42f});
 		ImDrawList_AddRectFilled(draw_list, row_min, row_max, pfill, row_rounding, 0);
@@ -178,27 +169,24 @@ bool mse_frontend_ui_sidebar_row(const char *icon, const char *label, bool selec
 	}
 
 	const ImGuiStyle *style = igGetStyle();
-	const ImVec4	  text_color =
-		selected ? (ImVec4){0.96f, 0.94f, 1.0f, 1.0f}
-				 : (row_hovered ? (ImVec4){0.88f, 0.86f, 0.96f, 1.0f} : (ImVec4){0.74f, 0.74f, 0.78f, 1.0f});
+	const ImVec4	  text_color = selected ? (ImVec4){0.96f, 0.94f, 1.0f, 1.0f} : (row_hovered ? (ImVec4){0.88f, 0.86f, 0.96f, 1.0f} : (ImVec4){0.74f, 0.74f, 0.78f, 1.0f});
 
 	const ImU32 icon_color	 = igGetColorU32_Vec4(text_color);
 	const ImU32 label_color	 = icon_color;
 	const float row_center_y = item_pos.y + (item_size.y * 0.5f);
-	const float icon_size	 = mse_frontend_imgui_font_size_icon() * 1.6f; /* larger sidebar icon */
+	const float icon_size	 = mse_frontend_imgui_font_size_icon() * 1.6f;
 	const float body_size	 = mse_frontend_imgui_font_size_body() + mse_frontend_ui_px(3.0f);
-	/* If the sidebar is narrow, snap to icons-only layout centered. */
+	
 	const float icon_y	   = row_center_y - (icon_size * 0.5f) - mse_frontend_ui_px(1.0f) + press_offset;
 	bool		icons_only = full_width < mse_frontend_ui_px(64.0f);
 	float		icon_x;
 	float		label_x = 0.0f;
 	float		label_y = row_center_y - (body_size * 0.5f) - 1.0f;
+	
 	if (icons_only) {
-		icon_x = item_pos.x + (item_size.x * 0.5f) - (icon_size * 0.5f) + style->FramePadding.x +
-				 (selected ? mse_frontend_ui_px(10.0f) : mse_frontend_ui_px(6.0f));
+		icon_x = item_pos.x + (item_size.x * 0.5f) - (icon_size * 0.5f) + style->FramePadding.x + (selected ? mse_frontend_ui_px(10.0f) : mse_frontend_ui_px(6.0f));
 	} else {
-		icon_x	= item_pos.x + style->FramePadding.x +
-				  (selected ? mse_frontend_ui_px(10.0f) : mse_frontend_ui_px(6.0f)); /* nudge icon to the right */
+		icon_x	= item_pos.x + style->FramePadding.x + (selected ? mse_frontend_ui_px(10.0f) : mse_frontend_ui_px(6.0f));
 		label_x = icon_x + icon_size + 0.0f;
 	}
 	icon_x += press_offset;
@@ -206,19 +194,13 @@ bool mse_frontend_ui_sidebar_row(const char *icon, const char *label, bool selec
 
 	ImFont *icon_font = mse_frontend_imgui_font_icon();
 	if (icon_font != NULL) {
-		ImDrawList_AddText_FontPtr(draw_list, icon_font, icon_size, (ImVec2){icon_x, icon_y}, icon_color, icon, NULL,
-								   0.0f, NULL);
-	} else {
-		ImDrawList_AddText_Vec2(draw_list, (ImVec2){icon_x, icon_y}, icon_color, icon, NULL);
+		ImDrawList_AddText_FontPtr(draw_list, icon_font, icon_size, (ImVec2){icon_x, icon_y}, icon_color, icon, NULL, 0.0f, NULL);
 	}
 
 	if (!icons_only) {
 		ImFont *body_font = mse_frontend_imgui_font_body();
 		if (body_font != NULL) {
-			ImDrawList_AddText_FontPtr(draw_list, body_font, body_size, (ImVec2){label_x, label_y}, label_color, label,
-									   NULL, 0.0f, NULL);
-		} else {
-			ImDrawList_AddText_Vec2(draw_list, (ImVec2){label_x, label_y}, label_color, label, NULL);
+			ImDrawList_AddText_FontPtr(draw_list, body_font, body_size, (ImVec2){label_x, label_y}, label_color, label, NULL, 0.0f, NULL);
 		}
 	}
 
@@ -238,10 +220,7 @@ static bool mse_frontend_ui_sidebar_action(const char *icon, const char *label)
 }
 
 static bool	   g_frontend_dock_layout_built = false;
-static ImGuiID g_frontend_dock_left_id		= 0;
 static ImGuiID g_frontend_dock_center_id	= 0;
-static ImGuiID g_frontend_dock_right_id		= 0;
-static float   g_last_systems_width			= 0.0f;
 
 static void mse_frontend_ui_draw_home_view(void)
 {
@@ -267,19 +246,13 @@ static void mse_frontend_ui_draw_home_view(void)
 		const ImVec2 circle_center_a = (ImVec2){
 			hero_pos.x + hero_size.x - mse_frontend_ui_px(92.0f) + sinf(time_value * 1.15f) * mse_frontend_ui_px(10.0f),
 			hero_pos.y + mse_frontend_ui_px(56.0f) + cosf(time_value * 0.92f) * mse_frontend_ui_px(8.0f)};
-		const ImVec2 circle_center_b = (ImVec2){hero_pos.x + hero_size.x - mse_frontend_ui_px(34.0f) +
-													cosf(time_value * 0.84f + 1.2f) * mse_frontend_ui_px(12.0f),
-												hero_pos.y + hero_size.y - mse_frontend_ui_px(22.0f) +
-													sinf(time_value * 1.05f + 0.7f) * mse_frontend_ui_px(9.0f)};
-		const ImVec2 circle_center_c = (ImVec2){hero_pos.x + hero_size.x - mse_frontend_ui_px(146.0f) +
-													sinf(time_value * 0.73f + 2.1f) * mse_frontend_ui_px(14.0f),
-												hero_pos.y + hero_size.y - mse_frontend_ui_px(56.0f) +
-													cosf(time_value * 1.18f + 0.35f) * mse_frontend_ui_px(11.0f)};
+		const ImVec2 circle_center_b = (ImVec2){hero_pos.x + hero_size.x - mse_frontend_ui_px(34.0f) + cosf(time_value * 0.84f + 1.2f) * mse_frontend_ui_px(12.0f),
+												hero_pos.y + hero_size.y - mse_frontend_ui_px(22.0f) + sinf(time_value * 1.05f + 0.7f) * mse_frontend_ui_px(9.0f)};
+		const ImVec2 circle_center_c = (ImVec2){hero_pos.x + hero_size.x - mse_frontend_ui_px(146.0f) + sinf(time_value * 0.73f + 2.1f) * mse_frontend_ui_px(14.0f),
+												hero_pos.y + hero_size.y - mse_frontend_ui_px(56.0f) + cosf(time_value * 1.18f + 0.35f) * mse_frontend_ui_px(11.0f)};
 		const float	 circle_radius_a = mse_frontend_ui_px(74.0f) + sinf(time_value * 1.35f) * mse_frontend_ui_px(7.0f);
-		const float	 circle_radius_b =
-			mse_frontend_ui_px(92.0f) + cosf(time_value * 1.08f + 0.45f) * mse_frontend_ui_px(9.0f);
-		const float circle_radius_c =
-			mse_frontend_ui_px(54.0f) + sinf(time_value * 1.52f + 1.1f) * mse_frontend_ui_px(6.0f);
+		const float	 circle_radius_b = mse_frontend_ui_px(92.0f) + cosf(time_value * 1.08f + 0.45f) * mse_frontend_ui_px(9.0f);
+		const float circle_radius_c  = mse_frontend_ui_px(54.0f) + sinf(time_value * 1.52f + 1.1f) * mse_frontend_ui_px(6.0f);
 		const float glow_alpha_a = 0.12f + (0.06f * (0.5f + 0.5f * sinf(time_value * 1.25f)));
 		const float glow_alpha_b = 0.10f + (0.07f * (0.5f + 0.5f * cosf(time_value * 0.98f + 0.9f)));
 		const float glow_alpha_c = 0.08f + (0.05f * (0.5f + 0.5f * sinf(time_value * 1.41f + 1.8f)));
@@ -294,13 +267,9 @@ static void mse_frontend_ui_draw_home_view(void)
 		ImDrawList_AddCircleFilled(draw_list, circle_center_c, fmaxf(circle_radius_c, 0.0f), hero_glow_c, 32);
 		ImDrawList_PopClipRect(draw_list);
 		ImDrawList_AddRect(draw_list, hero_pos, hero_max, hero_edge, rounding, mse_frontend_ui_px(1.5f), 0);
-		ImDrawList_AddRectFilled(
-			draw_list, (ImVec2){hero_pos.x + mse_frontend_ui_px(18.0f), hero_pos.y + mse_frontend_ui_px(18.0f)},
-			(ImVec2){hero_pos.x + mse_frontend_ui_px(24.0f), hero_pos.y + hero_size.y - mse_frontend_ui_px(18.0f)},
-			hero_accent, mse_frontend_ui_px(3.0f), 0);
+		ImDrawList_AddRectFilled(draw_list, (ImVec2){hero_pos.x + mse_frontend_ui_px(18.0f), hero_pos.y + mse_frontend_ui_px(18.0f)}, (ImVec2){hero_pos.x + mse_frontend_ui_px(24.0f), hero_pos.y + hero_size.y - mse_frontend_ui_px(18.0f)}, hero_accent, mse_frontend_ui_px(3.0f), 0);
 		igDummy(hero_size);
 
-		// Using ImFont_RenderText for rendering strings
 		ImFont_RenderText(mse_frontend_imgui_font_small(), draw_list, mse_frontend_imgui_font_size_small(),
 						  (ImVec2){hero_pos.x + mse_frontend_ui_px(34.0f), hero_pos.y + mse_frontend_ui_px(24.0f)},
 						  igGetColorU32_Vec4((ImVec4){0.72f, 0.62f, 0.98f, 1.0f}),
@@ -312,22 +281,15 @@ static void mse_frontend_ui_draw_home_view(void)
 						  (ImVec4){hero_pos.x, hero_pos.y, hero_pos.x + hero_size.x, hero_pos.y + hero_size.y},
 						  "MSE Library", NULL, 0.0f, 0);
 
-		ImFont_RenderText(
-			mse_frontend_imgui_font_small(), draw_list, mse_frontend_ui_px(16.0f),
+		ImFont_RenderText(mse_frontend_imgui_font_small(), draw_list, mse_frontend_ui_px(16.0f),
 			(ImVec2){hero_pos.x + mse_frontend_ui_px(34.0f), hero_pos.y + mse_frontend_ui_px(64.0f)},
 			igGetColorU32_Vec4((ImVec4){0.80f, 0.82f, 0.88f, 1.0f}),
-			(ImVec4){hero_pos.x, hero_pos.y + mse_frontend_ui_px(64.0f),
-					 hero_pos.x + hero_size.x - mse_frontend_ui_px(24.0f), hero_pos.y + hero_size.y},
+			(ImVec4){hero_pos.x, hero_pos.y + mse_frontend_ui_px(64.0f), hero_pos.x + hero_size.x - mse_frontend_ui_px(24.0f), hero_pos.y + hero_size.y},
 			"Browse featured systems, jump back into recent activity, and keep your collection organized in one place.",
 			NULL, hero_size.x - mse_frontend_ui_px(24.0f), 0);
 
 		igDummy((ImVec2){0.0f, mse_frontend_ui_px(8.0f)});
-		if (igButton(MSE_ICON_BACKENDS " Browse Backends",
-					 (ImVec2){mse_frontend_ui_px(170.0f), mse_frontend_ui_px(34.0f)})) {
-		}
-		igSameLine(0.0f, mse_frontend_ui_px(10.0f));
-		if (igButton(MSE_ICON_LOGS " View Logs", (ImVec2){mse_frontend_ui_px(140.0f), mse_frontend_ui_px(34.0f)})) {
-		}
+		if (igButton(MSE_ICON_BACKENDS " Browse Backends", (ImVec2){mse_frontend_ui_px(170.0f), mse_frontend_ui_px(34.0f)})) {}
 	}
 
 	igSetCursorScreenPos((ImVec2){content_pos.x + pad_x, hero_pos.y + hero_size.y + mse_frontend_ui_px(20.0f)});
@@ -338,22 +300,16 @@ static void mse_frontend_ui_draw_home_view(void)
 	igTextDisabled("A cleaner landing page with featured destinations and status summaries.");
 	igSpacing();
 
-	const int column_count =
-		content_size.x >= mse_frontend_ui_px(900.0f) ? 3 : (content_size.x >= mse_frontend_ui_px(620.0f) ? 2 : 1);
+	const int column_count = content_size.x >= mse_frontend_ui_px(900.0f) ? 3 : (content_size.x >= mse_frontend_ui_px(620.0f) ? 2 : 1);
 	const float cards_width = content_size.x - pad_x * 2.0f;
 	const float card_width	= (cards_width - gap * (float)(column_count - 1)) / (float)column_count;
 	const float card_height = mse_frontend_ui_px(156.0f);
 
 	const struct {
-		const char *icon;
-		const char *title;
-		const char *subtitle;
-		const char *meta;
+		const char *icon; const char *title; const char *subtitle; const char *meta;
 	} cards[] = {
-		{MSE_ICON_BACKENDS, "Browse Backends", "Inspect installed emulator backends, metadata, and versions.",
-		 "Catalog"},
+		{MSE_ICON_BACKENDS, "Browse Backends", "Inspect installed emulator backends, metadata, and versions.", "Catalog"},
 		{MSE_ICON_START_CORE, "Launch a Core", "Pick a backend, load a ROM, and jump into emulation quickly.", "Play"},
-		{MSE_ICON_LOGS, "Review Logs", "Track frontend events and runtime diagnostics in real time.", "Debug"},
 	};
 	const int	card_count	 = (int)(sizeof(cards) / sizeof(cards[0]));
 	const int	row_count	 = (card_count + column_count - 1) / column_count;
@@ -362,52 +318,36 @@ static void mse_frontend_ui_draw_home_view(void)
 	for (int i = 0; i < card_count; ++i) {
 		const int	 column	  = i % column_count;
 		const int	 row	  = i / column_count;
-		const ImVec2 card_pos = (ImVec2){content_pos.x + pad_x + ((card_width + gap) * (float)column),
-										 grid_start_y + ((card_height + gap) * (float)row)};
+		const ImVec2 card_pos = (ImVec2){content_pos.x + pad_x + ((card_width + gap) * (float)column), grid_start_y + ((card_height + gap) * (float)row)};
 
 		igSetCursorScreenPos(card_pos);
 		igPushID_Int(i);
 		igPushStyleVar_Float(ImGuiStyleVar_ChildRounding, mse_frontend_ui_px(12.0f));
 		igPushStyleVar_Float(ImGuiStyleVar_ChildBorderSize, mse_frontend_ui_px(1.0f));
-		igPushStyleVar_Vec2(ImGuiStyleVar_WindowPadding,
-							(ImVec2){mse_frontend_ui_px(18.0f), mse_frontend_ui_px(16.0f)});
+		igPushStyleVar_Vec2(ImGuiStyleVar_WindowPadding, (ImVec2){mse_frontend_ui_px(18.0f), mse_frontend_ui_px(16.0f)});
 		igPushStyleColor_Vec4(ImGuiCol_ChildBg, (ImVec4){0.11f, 0.11f, 0.15f, 0.90f});
 		igPushStyleColor_Vec4(ImGuiCol_Border, (ImVec4){0.64f, 0.46f, 0.95f, 0.24f});
 
-		if (igBeginChild_Str("##library_card", (ImVec2){card_width, card_height}, ImGuiChildFlags_Borders,
-							 ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+		if (igBeginChild_Str("##library_card", (ImVec2){card_width, card_height}, ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
 			const bool	 is_hovered		= igIsWindowHovered(ImGuiHoveredFlags_ChildWindows);
-			const bool	 is_active		= igIsWindowFocused(ImGuiFocusedFlags_ChildWindows);
 			const ImVec2 child_pos		= igGetWindowPos();
 			const ImVec2 child_size		= igGetWindowSize();
 			const ImVec2 child_max		= (ImVec2){child_pos.x + child_size.x, child_pos.y + child_size.y};
 			const float	 rounding		= mse_frontend_ui_px(12.0f);
 			ImDrawList	*card_draw_list = igGetWindowDrawList();
-			ImU32		 card_bg		= igGetColorU32_Vec4(is_hovered ? (ImVec4){0.15f, 0.13f, 0.22f, 0.96f}
-																		: (ImVec4){0.11f, 0.11f, 0.15f, 0.90f});
-			ImU32		 card_edge		= igGetColorU32_Vec4(is_hovered ? (ImVec4){0.74f, 0.58f, 1.00f, 0.55f}
-																		: (ImVec4){0.64f, 0.46f, 0.95f, 0.24f});
+			ImU32		 card_bg		= igGetColorU32_Vec4(is_hovered ? (ImVec4){0.15f, 0.13f, 0.22f, 0.96f} : (ImVec4){0.11f, 0.11f, 0.15f, 0.90f});
+			ImU32		 card_edge		= igGetColorU32_Vec4(is_hovered ? (ImVec4){0.74f, 0.58f, 1.00f, 0.55f} : (ImVec4){0.64f, 0.46f, 0.95f, 0.24f});
 			ImU32		 accent_bg		= igGetColorU32_Vec4((ImVec4){0.25f, 0.18f, 0.40f, is_hovered ? 0.95f : 0.82f});
 			ImU32		 glow_col		= igGetColorU32_Vec4((ImVec4){0.52f, 0.36f, 0.92f, 0.14f});
 
 			ImDrawList_AddRectFilled(card_draw_list, child_pos, child_max, card_bg, rounding, 0);
 			ImDrawList_AddRect(card_draw_list, child_pos, child_max, card_edge, rounding, mse_frontend_ui_px(1.3f), 0);
-			ImDrawList_AddCircleFilled(
-				card_draw_list,
-				(ImVec2){child_max.x - mse_frontend_ui_px(28.0f), child_pos.y + mse_frontend_ui_px(24.0f)},
-				mse_frontend_ui_px(18.0f), glow_col, 20);
-			ImDrawList_AddRectFilled(
-				card_draw_list,
-				(ImVec2){child_pos.x + mse_frontend_ui_px(16.0f), child_pos.y + mse_frontend_ui_px(16.0f)},
-				(ImVec2){child_pos.x + mse_frontend_ui_px(56.0f), child_pos.y + mse_frontend_ui_px(56.0f)}, accent_bg,
-				mse_frontend_ui_px(10.0f), 0);
+			ImDrawList_AddCircleFilled(card_draw_list, (ImVec2){child_max.x - mse_frontend_ui_px(28.0f), child_pos.y + mse_frontend_ui_px(24.0f)}, mse_frontend_ui_px(18.0f), glow_col, 20);
+			ImDrawList_AddRectFilled(card_draw_list, (ImVec2){child_pos.x + mse_frontend_ui_px(16.0f), child_pos.y + mse_frontend_ui_px(16.0f)}, (ImVec2){child_pos.x + mse_frontend_ui_px(56.0f), child_pos.y + mse_frontend_ui_px(56.0f)}, accent_bg, mse_frontend_ui_px(10.0f), 0);
 
 			ImFont *icon_font = mse_frontend_imgui_font_icon();
 			if (icon_font != NULL) {
-				ImDrawList_AddText_FontPtr(
-					card_draw_list, icon_font, mse_frontend_imgui_font_size_icon(),
-					(ImVec2){child_pos.x + mse_frontend_ui_px(26.0f), child_pos.y + mse_frontend_ui_px(22.0f)},
-					igGetColorU32_Vec4((ImVec4){0.90f, 0.84f, 1.0f, 1.0f}), cards[i].icon, NULL, 0.0f, NULL);
+				ImDrawList_AddText_FontPtr(card_draw_list, icon_font, mse_frontend_imgui_font_size_icon(), (ImVec2){child_pos.x + mse_frontend_ui_px(26.0f), child_pos.y + mse_frontend_ui_px(22.0f)}, igGetColorU32_Vec4((ImVec4){0.90f, 0.84f, 1.0f, 1.0f}), cards[i].icon, NULL, 0.0f, NULL);
 			}
 
 			igPushFont(mse_frontend_imgui_font_small(), mse_frontend_imgui_font_size_small());
@@ -415,7 +355,6 @@ static void mse_frontend_ui_draw_home_view(void)
 			igPopFont();
 
 			igDummy((ImVec2){0.0f, mse_frontend_ui_px(34.0f)});
-
 			igPushFont(mse_frontend_imgui_font_title(), mse_frontend_imgui_font_size_title());
 			igTextColored((ImVec4){0.97f, 0.97f, 0.99f, 1.0f}, "%s", cards[i].title);
 			igPopFont();
@@ -428,8 +367,7 @@ static void mse_frontend_ui_draw_home_view(void)
 			{
 				char action_label[64];
 				snprintf(action_label, sizeof(action_label), "Open##library_card_%d", i);
-				if (igButton(action_label, (ImVec2){-1.0f, mse_frontend_ui_px(28.0f)})) {
-				}
+				if (igButton(action_label, (ImVec2){-1.0f, mse_frontend_ui_px(28.0f)})) {}
 			}
 		}
 		igEndChild();
@@ -439,7 +377,6 @@ static void mse_frontend_ui_draw_home_view(void)
 	}
 
 	igSetCursorScreenPos((ImVec2){content_pos.x + pad_x, grid_start_y + ((card_height + gap) * (float)row_count)});
-
 	igSpacing();
 	igSeparator();
 	igSpacing();
@@ -448,9 +385,7 @@ static void mse_frontend_ui_draw_home_view(void)
 	igTextColored((ImVec4){0.90f, 0.90f, 0.95f, 1.0f}, "Overview");
 	igPopFont();
 
-	if (igBeginTable("library_overview", 3,
-					 ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchSame,
-					 (ImVec2){0.0f, 0.0f}, 0.0f)) {
+	if (igBeginTable("library_overview", 3, ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchSame, (ImVec2){0.0f, 0.0f}, 0.0f)) {
 		igTableNextRow(0, 0);
 
 		igTableSetColumnIndex(0);
@@ -472,11 +407,8 @@ static void mse_frontend_ui_draw_home_view(void)
 		igPushFont(mse_frontend_imgui_font_title(), mse_frontend_imgui_font_size_title());
 		igTextColored((ImVec4){0.36f, 0.72f, 0.95f, 1.0f}, "Live");
 		igPopFont();
-		igTextWrapped("Open the logs view for a continuous stream of debug output.");
-
 		igEndTable();
 	}
-
 	igDummy((ImVec2){0.0f, mse_frontend_ui_px(10.0f)});
 }
 
@@ -486,15 +418,11 @@ static void mse_frontend_ui_draw_backend_manager_view(mse_frontend_ui_state_t *s
 	igText("BACKENDS");
 	igPopFont();
 
-	igInputTextWithHint("##Filter", "Filter backends...", state->search_filter, sizeof(state->search_filter), 0, NULL,
-						NULL);
-
+	igInputTextWithHint("##Filter", "Filter backends...", state->search_filter, sizeof(state->search_filter), 0, NULL, NULL);
 	igSeparator();
 
 	const int num_backends = (int)(state->backend_count);
-
-	ImGuiTableFlags table_flags = ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_RowBg |
-								  ImGuiTableFlags_Resizable;
+	ImGuiTableFlags table_flags = ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable;
 	if (igBeginTable("cores_table", 4, table_flags, (ImVec2){0, 0}, 0)) {
 		igTableSetupColumn("STS", ImGuiTableColumnFlags_WidthFixed, 30.0f, 0);
 		igTableSetupColumn("NAME", ImGuiTableColumnFlags_WidthStretch, 0.0f, 0);
@@ -503,7 +431,7 @@ static void mse_frontend_ui_draw_backend_manager_view(mse_frontend_ui_state_t *s
 		igTableHeadersRow();
 
 		for (int i = 0; i < num_backends; ++i) {
-			mse_backend_t *b = state->backends[i];
+			libmse_backend_t *b = state->backends[i];
 			if (b == NULL) continue;
 
 			const char *name	= b->info.name ? b->info.name : "(unnamed)";
@@ -520,8 +448,7 @@ static void mse_frontend_ui_draw_backend_manager_view(mse_frontend_ui_state_t *s
 			igPushStyleColor_Vec4(ImGuiCol_Header, (ImVec4){0, 0, 0, 0});
 			igPushStyleColor_Vec4(ImGuiCol_HeaderHovered, (ImVec4){0, 0, 0, 0});
 			igPushStyleColor_Vec4(ImGuiCol_HeaderActive, (ImVec4){0, 0, 0, 0});
-			if (igSelectable_Bool(name, state->selected_core_index == i, ImGuiSelectableFlags_SpanAllColumns,
-								  (ImVec2){0, 0})) {
+			if (igSelectable_Bool(name, state->selected_core_index == i, ImGuiSelectableFlags_SpanAllColumns, (ImVec2){0, 0})) {
 				state->selected_core_index = i;
 			}
 			igPopStyleColor(3);
@@ -545,7 +472,7 @@ static void mse_frontend_ui_draw_inspector_view(mse_frontend_ui_state_t *state)
 {
 	const int num_backends = (int)(state->backend_count);
 	if (state->selected_core_index >= 0 && state->selected_core_index < num_backends) {
-		mse_backend_t *b = state->backends[state->selected_core_index];
+		libmse_backend_t *b = state->backends[state->selected_core_index];
 		if (b == NULL) goto inspector_empty;
 
 		const char *name		  = b->info.name ? b->info.name : "(unnamed)";
@@ -554,7 +481,6 @@ static void mse_frontend_ui_draw_inspector_view(mse_frontend_ui_state_t *state)
 		const char *licence		  = b->info.licence ? b->info.licence : "--";
 		const char *desc		  = b->info.description ? b->info.description : "--";
 		const char *built		  = b->info.build_date ? b->info.build_date : "--";
-		const float full_width	  = igGetContentRegionAvail().x;
 		const float card_gap	  = mse_frontend_ui_px(12.0f);
 		const float header_height = mse_frontend_ui_px(210.0f);
 
@@ -571,29 +497,14 @@ static void mse_frontend_ui_draw_inspector_view(mse_frontend_ui_state_t *state)
 			ImU32		 icon_box_bg   = igGetColorU32_Vec4((ImVec4){0.19f, 0.14f, 0.30f, 0.96f});
 			ImU32		 icon_box_edge = igGetColorU32_Vec4((ImVec4){0.74f, 0.60f, 1.0f, 0.48f});
 
-			ImDrawList_AddCircleFilled(
-				draw_list,
-				(ImVec2){card_pos.x + card_size.x - mse_frontend_ui_px(38.0f), card_pos.y + mse_frontend_ui_px(30.0f)},
-				mse_frontend_ui_px(40.0f), glow_a, 24);
-			ImDrawList_AddCircleFilled(draw_list,
-									   (ImVec2){card_pos.x + card_size.x - mse_frontend_ui_px(82.0f),
-												card_pos.y + card_size.y - mse_frontend_ui_px(18.0f)},
-									   mse_frontend_ui_px(58.0f), glow_b, 24);
-			ImDrawList_AddRectFilled(
-				draw_list, (ImVec2){card_pos.x + mse_frontend_ui_px(8.0f), card_pos.y + mse_frontend_ui_px(12.0f)},
-				(ImVec2){card_pos.x + mse_frontend_ui_px(13.0f), card_pos.y + card_size.y - mse_frontend_ui_px(12.0f)},
-				accent, mse_frontend_ui_px(2.5f), 0);
-			ImDrawList_AddRectFilled(draw_list, (ImVec2){icon_box_x, icon_box_y},
-									 (ImVec2){icon_box_x + icon_box_size, icon_box_y + icon_box_size}, icon_box_bg,
-									 mse_frontend_ui_px(12.0f), 0);
-			ImDrawList_AddRect(draw_list, (ImVec2){icon_box_x, icon_box_y},
-							   (ImVec2){icon_box_x + icon_box_size, icon_box_y + icon_box_size}, icon_box_edge,
-							   mse_frontend_ui_px(12.0f), mse_frontend_ui_px(1.2f), 0);
+			ImDrawList_AddCircleFilled(draw_list, (ImVec2){card_pos.x + card_size.x - mse_frontend_ui_px(38.0f), card_pos.y + mse_frontend_ui_px(30.0f)}, mse_frontend_ui_px(40.0f), glow_a, 24);
+			ImDrawList_AddCircleFilled(draw_list, (ImVec2){card_pos.x + card_size.x - mse_frontend_ui_px(82.0f), card_pos.y + card_size.y - mse_frontend_ui_px(18.0f)}, mse_frontend_ui_px(58.0f), glow_b, 24);
+			ImDrawList_AddRectFilled(draw_list, (ImVec2){card_pos.x + mse_frontend_ui_px(8.0f), card_pos.y + mse_frontend_ui_px(12.0f)}, (ImVec2){card_pos.x + mse_frontend_ui_px(13.0f), card_pos.y + card_size.y - mse_frontend_ui_px(12.0f)}, accent, mse_frontend_ui_px(2.5f), 0);
+			ImDrawList_AddRectFilled(draw_list, (ImVec2){icon_box_x, icon_box_y}, (ImVec2){icon_box_x + icon_box_size, icon_box_y + icon_box_size}, icon_box_bg, mse_frontend_ui_px(12.0f), 0);
+			ImDrawList_AddRect(draw_list, (ImVec2){icon_box_x, icon_box_y}, (ImVec2){icon_box_x + icon_box_size, icon_box_y + icon_box_size}, icon_box_edge, mse_frontend_ui_px(12.0f), mse_frontend_ui_px(1.2f), 0);
 
 			igPushFont(mse_frontend_imgui_font_icon(), mse_frontend_imgui_font_size_icon());
-			igSetCursorScreenPos(
-				(ImVec2){card_pos.x + (card_size.x * 0.5f) - (mse_frontend_imgui_font_size_icon() * 0.5f),
-						 icon_box_y + mse_frontend_ui_px(18.0f)});
+			igSetCursorScreenPos((ImVec2){card_pos.x + (card_size.x * 0.5f) - (mse_frontend_imgui_font_size_icon() * 0.5f), icon_box_y + mse_frontend_ui_px(18.0f)});
 			igTextColored((ImVec4){0.92f, 0.86f, 1.0f, 1.0f}, MSE_ICON_START_CORE);
 			igPopFont();
 
@@ -608,10 +519,7 @@ static void mse_frontend_ui_draw_inspector_view(mse_frontend_ui_state_t *state)
 
 			igTextWrapped("%s", desc);
 			igDummy((ImVec2){0.0f, mse_frontend_ui_px(4.0f)});
-			if (igBeginTable("inspector_summary", 3,
-							 ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersInnerV |
-								 ImGuiTableFlags_SizingStretchSame,
-							 (ImVec2){0.0f, 0.0f}, 0.0f)) {
+			if (igBeginTable("inspector_summary", 3, ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchSame, (ImVec2){0.0f, 0.0f}, 0.0f)) {
 				igTableNextRow(0, 0);
 
 				igTableSetColumnIndex(0);
@@ -638,14 +546,13 @@ static void mse_frontend_ui_draw_inspector_view(mse_frontend_ui_state_t *state)
 			igSeparator();
 			igTextDisabled("Select a ROM image to load with the currently active backend.");
 			igSetNextItemWidth(-1.0f);
-			igInputTextWithHint("##rom_path", "ROM file path...", state->rom_path, sizeof(state->rom_path), 0, NULL,
-								NULL);
+			igInputTextWithHint("##rom_path", "ROM file path...", state->rom_path, sizeof(state->rom_path), 0, NULL, NULL);
 			if (igButton("Browse...", (ImVec2){mse_frontend_ui_px(110.0f), 0.0f})) {
 				mse_frontend_ui_open_rom_file_dialog(state);
 			}
 			igSameLine(0.0f, mse_frontend_ui_px(8.0f));
 			if (igButton(MSE_ICON_START_CORE " Load ROM", (ImVec2){-1.0f, 0.0f})) {
-				mse_backend_t *active = mse_frontend_input_manager_get_backend(state->input_manager);
+				libmse_backend_t *active = mse_frontend_input_manager_get_backend(state->input_manager);
 				if (active != NULL && state->rom_path[0] != '\0') {
 					FILE *f = fopen(state->rom_path, "rb");
 					if (f) {
@@ -674,42 +581,30 @@ static void mse_frontend_ui_draw_inspector_view(mse_frontend_ui_state_t *state)
 		if (mse_frontend_ui_begin_child_window("INSPECTOR_DETAILS_CHILD", (ImVec2){0.0f, 0.0f}, true)) {
 			mse_frontend_ui_icon_text(MSE_ICON_INFO, "BACKEND DETAILS");
 			igSeparator();
-			if (igBeginTable("core_info_table", 2, ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp,
-							 (ImVec2){0, 0}, 0)) {
+			if (igBeginTable("core_info_table", 2, ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp, (ImVec2){0, 0}, 0)) {
 				igTableSetupColumn("Key", ImGuiTableColumnFlags_WidthFixed, mse_frontend_ui_px(96.0f), 0);
 				igTableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch, 0.0f, 0);
 
 				igPushFont(mse_frontend_imgui_font_small(), mse_frontend_imgui_font_size_small());
+				igTableNextRow(0, 0);
+				igTableSetColumnIndex(0); igTextDisabled("Author");
+				igTableSetColumnIndex(1); igTextWrapped("%s", author);
 
 				igTableNextRow(0, 0);
-				igTableSetColumnIndex(0);
-				igTextDisabled("Author");
-				igTableSetColumnIndex(1);
-				igTextWrapped("%s", author);
+				igTableSetColumnIndex(0); igTextDisabled("Version");
+				igTableSetColumnIndex(1); igTextWrapped("%s", version);
 
 				igTableNextRow(0, 0);
-				igTableSetColumnIndex(0);
-				igTextDisabled("Version");
-				igTableSetColumnIndex(1);
-				igTextWrapped("%s", version);
+				igTableSetColumnIndex(0); igTextDisabled("License");
+				igTableSetColumnIndex(1); igTextWrapped("%s", licence);
 
 				igTableNextRow(0, 0);
-				igTableSetColumnIndex(0);
-				igTextDisabled("License");
-				igTableSetColumnIndex(1);
-				igTextWrapped("%s", licence);
+				igTableSetColumnIndex(0); igTextDisabled("Build Date");
+				igTableSetColumnIndex(1); igTextWrapped("%s", built);
 
 				igTableNextRow(0, 0);
-				igTableSetColumnIndex(0);
-				igTextDisabled("Build Date");
-				igTableSetColumnIndex(1);
-				igTextWrapped("%s", built);
-
-				igTableNextRow(0, 0);
-				igTableSetColumnIndex(0);
-				igTextDisabled("Inputs");
-				igTableSetColumnIndex(1);
-				igTextWrapped("%zu", b->input_count);
+				igTableSetColumnIndex(0); igTextDisabled("Inputs");
+				igTableSetColumnIndex(1); igTextWrapped("%zu", b->input_count);
 
 				igPopFont();
 				igEndTable();
@@ -728,8 +623,7 @@ inspector_empty:
 		igSeparator();
 		igTextDisabled("Select a backend to view details.");
 		igSpacing();
-		igTextWrapped(
-			"Choose an entry from the Backends list to see its description, metadata, and ROM loading actions here.");
+		igTextWrapped("Choose an entry from the Backends list to see its description, metadata, and ROM loading actions here.");
 	}
 	mse_frontend_ui_end_child_window();
 }
@@ -742,97 +636,112 @@ static void mse_frontend_ui_draw_systems_window(mse_frontend_ui_state_t *state)
 	igSeparator();
 
 	const ImGuiStyle *style = igGetStyle();
-	const float		  sidebar_footer_height =
-		(mse_frontend_ui_px(42.0f) * 2.0f) + (style != NULL ? (style->WindowPadding.y * 2.0f) : 0.0f); //+
-	//(style != NULL ? style->ItemSpacing.y : 0.0f) + 4.0f;
+	const float		  sidebar_footer_height = (mse_frontend_ui_px(42.0f) * 2.0f) + (style != NULL ? (style->WindowPadding.y * 2.0f) : 0.0f);
 
-	igBeginChild_Str("SYSTEMS_BODY", (ImVec2){0.0f, -sidebar_footer_height}, 0,
-					 ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-	if (mse_frontend_ui_sidebar_item(MSE_ICON_HOME, "Home", state->current_nav == MSE_FRONTEND_NAV_HOME))
-		state->current_nav = MSE_FRONTEND_NAV_HOME;
-	if (mse_frontend_ui_sidebar_item(MSE_ICON_LIBRARY, "Library", state->current_nav == MSE_FRONTEND_NAV_LIBRARY))
-		state->current_nav = MSE_FRONTEND_NAV_LIBRARY;
-	if (mse_frontend_ui_sidebar_item(MSE_ICON_BACKENDS, "Backends", state->current_nav == MSE_FRONTEND_NAV_BACKENDS))
-		state->current_nav = MSE_FRONTEND_NAV_BACKENDS;
-	if (mse_frontend_ui_sidebar_item(MSE_ICON_BIOS, "BIOS", state->current_nav == MSE_FRONTEND_NAV_BIOS))
-		state->current_nav = MSE_FRONTEND_NAV_BIOS;
-	if (mse_frontend_ui_sidebar_item(MSE_ICON_MEMVIEW, "MemView", state->current_nav == MSE_FRONTEND_NAV_MEMVIEW))
-		state->current_nav = MSE_FRONTEND_NAV_MEMVIEW;
-	if (mse_frontend_ui_sidebar_item(MSE_ICON_LOGS, "Logs", state->current_nav == MSE_FRONTEND_NAV_LOGS))
-		state->current_nav = MSE_FRONTEND_NAV_LOGS;
+	igBeginChild_Str("SYSTEMS_BODY", (ImVec2){0.0f, -sidebar_footer_height}, 0, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+	if (mse_frontend_ui_sidebar_item(MSE_ICON_HOME, "Home", state->current_nav == MSE_FRONTEND_NAV_HOME)) state->current_nav = MSE_FRONTEND_NAV_HOME;
+	if (mse_frontend_ui_sidebar_item(MSE_ICON_LIBRARY, "Library", state->current_nav == MSE_FRONTEND_NAV_LIBRARY)) state->current_nav = MSE_FRONTEND_NAV_LIBRARY;
+	if (mse_frontend_ui_sidebar_item(MSE_ICON_BACKENDS, "Backends", state->current_nav == MSE_FRONTEND_NAV_BACKENDS)) state->current_nav = MSE_FRONTEND_NAV_BACKENDS;
+	if (mse_frontend_ui_sidebar_item(MSE_ICON_BIOS, "BIOS", state->current_nav == MSE_FRONTEND_NAV_BIOS)) state->current_nav = MSE_FRONTEND_NAV_BIOS;
+	if (mse_frontend_ui_sidebar_item(MSE_ICON_MEMVIEW, "MemView", state->current_nav == MSE_FRONTEND_NAV_MEMVIEW)) state->current_nav = MSE_FRONTEND_NAV_MEMVIEW;
 	igEndChild();
 
-	/* record current width so we can snap next frame if user sizes small */
-	{
-		ImVec2 ws			 = igGetWindowSize();
-		g_last_systems_width = ws.x;
-	}
-
-	igBeginChild_Str("SYSTEMS_FOOTER", (ImVec2){0.0f, 0.0f}, 0,
-					 ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+	igBeginChild_Str("SYSTEMS_FOOTER", (ImVec2){0.0f, 0.0f}, 0, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
 	mse_frontend_ui_draw_sidebar_footer(state);
 	igEndChild();
 }
 
 static void mse_frontend_ui_draw_center_window(mse_frontend_ui_state_t *state)
 {
-	/* The center dock no longer uses a tab bar — show the active view based on navigation state */
 	if (state == NULL) return;
 
-	const ImVec2 content_pos  = igGetCursorScreenPos();
-	const ImVec2 content_size = igGetContentRegionAvail();
-	const ImVec2 clip_min	  = content_pos;
-	const ImVec2 clip_max	  = (ImVec2){content_pos.x + content_size.x, content_pos.y + content_size.y};
-	ImDrawList	*bg_draw_list = igGetWindowDrawList();
+	// Automatically collapse sidebar on highly compressed displays
+	float avail_width = igGetContentRegionAvail().x;
+	float sidebar_w = avail_width < mse_frontend_ui_px(600.0f) ? mse_frontend_ui_px(64.0f) : mse_frontend_ui_px(220.0f);
 
-	ImDrawList_PushClipRect(bg_draw_list, clip_min, clip_max, true);
+	if (igBeginChild_Str("SIDEBAR_WRAPPER", (ImVec2){sidebar_w, 0.0f}, false, ImGuiWindowFlags_NoBackground)) {
+		mse_frontend_ui_draw_systems_window(state);
+	}
+	igEndChild();
 
-	const ImVec2 mouse		 = igGetIO_Nil()->MousePos;
-	const float	 time_value	 = (float)igGetTime();
-	const float	 spacing	 = 34.0f;
-	const float	 radius_base = 1.8f;
-	for (float y = clip_min.y; y <= clip_max.y + spacing; y += spacing) {
-		for (float x = clip_min.x; x <= clip_max.x + spacing; x += spacing) {
-			const float dx		  = x - mouse.x;
-			const float dy		  = y - mouse.y;
-			const float distance  = sqrtf((dx * dx) + (dy * dy));
-			float		whiteness = 0.18f + (1.0f - (distance / 360.0f));
-			if (whiteness < 0.08f) whiteness = 0.08f;
-			if (whiteness > 1.0f) whiteness = 1.0f;
+	igSameLine(0.0f, 0.0f);
 
-			const float pulse  = 0.5f + 0.5f * sinf(time_value * 1.4f + (x + y) * 0.01f);
-			const float radius = radius_base + pulse * 0.9f;
-			if ((x + radius) < clip_min.x || (x - radius) > clip_max.x || (y + radius) < clip_min.y ||
-				(y - radius) > clip_max.y) {
-				continue;
+	if (igBeginChild_Str("CONTENT_WRAPPER", (ImVec2){0.0f, 0.0f}, false, ImGuiWindowFlags_NoBackground)) {
+		
+		const ImVec2 content_pos  = igGetCursorScreenPos();
+		const ImVec2 content_size = igGetContentRegionAvail();
+		const ImVec2 clip_min	  = content_pos;
+		const ImVec2 clip_max	  = (ImVec2){content_pos.x + content_size.x, content_pos.y + content_size.y};
+		ImDrawList	*bg_draw_list = igGetWindowDrawList();
+
+		ImDrawList_PushClipRect(bg_draw_list, clip_min, clip_max, true);
+
+		const ImVec2 mouse		 = igGetIO_Nil()->MousePos;
+		const float	 time_value	 = (float)igGetTime();
+		const float	 spacing	 = mse_frontend_ui_px(34.0f);
+		const float	 radius_base = mse_frontend_ui_px(1.8f);
+		for (float y = clip_min.y; y <= clip_max.y + spacing; y += spacing) {
+			for (float x = clip_min.x; x <= clip_max.x + spacing; x += spacing) {
+				const float dx		  = x - mouse.x;
+				const float dy		  = y - mouse.y;
+				const float distance  = sqrtf((dx * dx) + (dy * dy));
+				float		whiteness = 0.18f + (1.0f - (distance / mse_frontend_ui_px(360.0f)));
+				if (whiteness < 0.08f) whiteness = 0.08f;
+				if (whiteness > 1.0f) whiteness = 1.0f;
+
+				const float pulse  = 0.5f + 0.5f * sinf(time_value * 1.4f + (x + y) * 0.01f);
+				const float radius = radius_base + pulse * mse_frontend_ui_px(0.9f);
+				if ((x + radius) < clip_min.x || (x - radius) > clip_max.x || (y + radius) < clip_min.y || (y - radius) > clip_max.y) {
+					continue;
+				}
+				const float alpha	= 0.08f + (whiteness * 0.22f);
+				ImU32		dot_col = igGetColorU32_Vec4((ImVec4){whiteness, whiteness, whiteness, alpha});
+				ImDrawList_AddCircleFilled(bg_draw_list, (ImVec2){x, y}, radius, dot_col, 12);
 			}
-			const float alpha	= 0.08f + (whiteness * 0.22f);
-			ImU32		dot_col = igGetColorU32_Vec4((ImVec4){whiteness, whiteness, whiteness, alpha});
-			ImDrawList_AddCircleFilled(bg_draw_list, (ImVec2){x, y}, radius, dot_col, 12);
+		}
+
+		ImDrawList_PopClipRect(bg_draw_list);
+
+		// Safely evaluate context rendering within the child wrapper
+		switch (state->current_nav) {
+		case MSE_FRONTEND_NAV_HOME: {
+			mse_frontend_ui_draw_home_view();
+			break;
+		}
+		case MSE_FRONTEND_NAV_LIBRARY: {
+			mse_frontend_library_view_draw(state);
+			break;
+		}
+		case MSE_FRONTEND_NAV_BACKENDS: {
+			// Sub-split backends layout nicely so it replaces the old docking structure
+			const float pad_x = mse_frontend_ui_px(24.0f);
+			const float pad_y = mse_frontend_ui_px(20.0f);
+			igSetCursorScreenPos((ImVec2){content_pos.x + pad_x, content_pos.y + pad_y});
+			
+			float cw = igGetContentRegionAvail().x;
+			float ch = igGetContentRegionAvail().y;
+			float split_w = cw > mse_frontend_ui_px(750.0f) ? cw * 0.55f : cw;
+
+			if (igBeginChild_Str("BACKEND_MAIN", (ImVec2){split_w, ch}, false, ImGuiWindowFlags_NoBackground)) {
+				mse_frontend_ui_draw_backend_manager_view(state);
+			}
+			igEndChild();
+
+			if (cw > mse_frontend_ui_px(750.0f)) {
+				igSameLine(0.0f, mse_frontend_ui_px(16.0f));
+				if (igBeginChild_Str("BACKEND_INSPECTOR", (ImVec2){0.0f, ch}, false, ImGuiWindowFlags_NoBackground)) {
+					mse_frontend_ui_draw_inspector_view(state);
+				}
+				igEndChild();
+			}
+			break;
+		}
+		default:
+			mse_frontend_ui_draw_home_view();
+			break;
 		}
 	}
-
-	ImDrawList_PopClipRect(bg_draw_list);
-
-	switch (state->current_nav) {
-	case MSE_FRONTEND_NAV_HOME: {
-		mse_frontend_ui_draw_home_view();
-		break;
-	}
-	case MSE_FRONTEND_NAV_LIBRARY: {
-		//mse_frontend_ui_draw_library_view();
-		break;
-	}
-	case MSE_FRONTEND_NAV_BACKENDS:
-		mse_frontend_ui_draw_backend_manager_view(state);
-		break;
-	case MSE_FRONTEND_NAV_LOGS:
-		mse_frontend_ui_draw_logs_view();
-		break;
-	default:
-		mse_frontend_ui_draw_home_view();
-		break;
-	}
+	igEndChild();
 }
 
 static void mse_frontend_ui_ensure_dock_layout(ImGuiViewport *viewport)
@@ -846,31 +755,14 @@ static void mse_frontend_ui_ensure_dock_layout(ImGuiViewport *viewport)
 	igDockBuilderAddNode(dockspace_id, ImGuiDockNodeFlags_DockSpace);
 	igDockBuilderSetNodeSize(dockspace_id, viewport->WorkSize);
 
-	ImGuiID left_id			= 0;
-	ImGuiID center_right_id = 0;
-	g_frontend_dock_left_id = igDockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.22f, &left_id, &center_right_id);
-
-	ImGuiID center_id = 0;
-	ImGuiID right_id  = 0;
-	igDockBuilderSplitNode(center_right_id, ImGuiDir_Right, 0.27f, &right_id, &center_id);
-	g_frontend_dock_left_id	  = left_id;
-	g_frontend_dock_center_id = center_id;
-	g_frontend_dock_right_id  = right_id;
-
-	ImGuiDockNode *left_node = igDockBuilderGetNode(g_frontend_dock_left_id);
-	if (left_node != NULL) {
-		left_node->LocalFlags |= ImGuiDockNodeFlags_AutoHideTabBar;
+	// The frontend layout is now contained within a SINGLE dock node to hide everything cleanly
+	g_frontend_dock_center_id = dockspace_id;
+	ImGuiDockNode *center_node = igDockBuilderGetNode(g_frontend_dock_center_id);
+	if (center_node != NULL) {
+		center_node->LocalFlags |= ImGuiDockNodeFlags_NoTabBar; // Hide Tabs
 	}
 
-	ImGuiDockNode *right_node = igDockBuilderGetNode(g_frontend_dock_right_id);
-	if (right_node != NULL) {
-		right_node->LocalFlags |= ImGuiDockNodeFlags_AutoHideTabBar;
-	}
-
-	igDockBuilderDockWindow("SYSTEMS_DOCK", g_frontend_dock_left_id);
 	igDockBuilderDockWindow("CENTER_DOCK", g_frontend_dock_center_id);
-	igDockBuilderDockWindow("EMULATION_DOCK", g_frontend_dock_center_id);
-	igDockBuilderDockWindow("INSPECTOR_DOCK", g_frontend_dock_right_id);
 	igDockBuilderFinish(dockspace_id);
 	igSetWindowFocus_Str("CENTER_DOCK");
 
@@ -909,6 +801,8 @@ static void mse_frontend_register_cvars(mse_frontend_ui_state_t *state)
 	libmse_cvar_register_change_cb("mse_presentation_mode", mse_cvar_presentation_mode_cb, NULL);
 
 	libmse_cvar_register("mse_content_scale", LIBMSE_CVAR_FLOAT, (void *)&state->content_scale, "UI content scale factor");
+
+	libmse_cvar_register("mse_show_terminal", LIBMSE_CVAR_INT, (void *)&state->show_terminal, "Show terminal window (0 = No, 1 = Yes)");
 }
 
 static float mse_frontend_ui_status_bar_height(void)
@@ -916,15 +810,13 @@ static float mse_frontend_ui_status_bar_height(void)
 	const float		  text_size = mse_frontend_imgui_font_size_small();
 	const ImGuiStyle *style		= igGetStyle();
 	const float		  padding_y = style != NULL ? style->FramePadding.y : 0.0f;
-	/* reduce by 4 pixels to match requested size */
 	return text_size + (padding_y * 2.0f) + mse_frontend_ui_px(10.0f);
 }
 
 static void mse_frontend_ui_draw_bottom_bar(const mse_frontend_ui_state_t *state)
 {
 	ImVec2 bar_size = (ImVec2){0.0f, mse_frontend_ui_status_bar_height()};
-	if (igBeginChild_Str("STATUS_BAR", bar_size, ImGuiChildFlags_Borders,
-						 ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+	if (igBeginChild_Str("STATUS_BAR", bar_size, ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
 		ImGuiIO *io = igGetIO_Nil();
 
 		igPushFont(mse_frontend_imgui_font_small(), mse_frontend_imgui_font_size_small());
@@ -937,32 +829,19 @@ static void mse_frontend_ui_draw_bottom_bar(const mse_frontend_ui_state_t *state
 		igSameLine(0, mse_frontend_ui_px(10.0f));
 		igTextDisabled("|");
 		igSameLine(0, mse_frontend_ui_px(10.0f));
-		igText("Backend: %s",
-			   (state != NULL && state->active_backend_name != NULL) ? state->active_backend_name : "None");
+		igText("Backend: %s", (state != NULL && state->active_backend_name != NULL) ? state->active_backend_name : "None");
 		igSameLine(0, mse_frontend_ui_px(10.0f));
 		igTextDisabled("|");
 		igSameLine(0, mse_frontend_ui_px(10.0f));
+		
 		const char *view_label = "None";
 		if (state != NULL) {
 			switch (state->current_nav) {
-			case MSE_FRONTEND_NAV_LIBRARY:
-				view_label = "Library";
-				break;
-			case MSE_FRONTEND_NAV_BACKENDS:
-				view_label = "Backends";
-				break;
-			case MSE_FRONTEND_NAV_BIOS:
-				view_label = "BIOS";
-				break;
-			case MSE_FRONTEND_NAV_MEMVIEW:
-				view_label = "MemView";
-				break;
-			case MSE_FRONTEND_NAV_LOGS:
-				view_label = "Logs";
-				break;
-			default:
-				view_label = "None";
-				break;
+			case MSE_FRONTEND_NAV_LIBRARY: view_label = "Library"; break;
+			case MSE_FRONTEND_NAV_BACKENDS: view_label = "Backends"; break;
+			case MSE_FRONTEND_NAV_BIOS: view_label = "BIOS"; break;
+			case MSE_FRONTEND_NAV_MEMVIEW: view_label = "MemView"; break;
+			default: view_label = "None"; break;
 			}
 		}
 		igText("View: %s", view_label);
@@ -973,15 +852,12 @@ static void mse_frontend_ui_draw_bottom_bar(const mse_frontend_ui_state_t *state
 		igPushFont(mse_frontend_imgui_font_small(), mse_frontend_imgui_font_size_small());
 		{
 			ImVec2 ver_size = igCalcTextSize(LIBMSE_VERSION_BUILD_STRING, NULL, false, 0.0f);
-			//ImVec2 vk_size = igCalcTextSize("VULKAN_API", NULL, false, 0.0f);
 			const float spacing		 = mse_frontend_ui_px(10.0f);
-			const float badges_width = ver_size.x + /*vk_size.x +*/ spacing;
+			const float badges_width = ver_size.x + spacing;
 			const float badge_start	 = igGetCursorPosX() + igGetContentRegionAvail().x - badges_width;
 			if (badge_start > igGetCursorPosX()) {
 				igSetCursorPosX(badge_start);
 			}
-			//igTextDisabled("VULKAN_API");
-			//igSameLine(0, spacing);
 			igTextDisabled("%s", LIBMSE_VERSION_BUILD_STRING);
 			igSameLine(0, spacing);
 		}
@@ -993,7 +869,6 @@ static void mse_frontend_ui_draw_bottom_bar(const mse_frontend_ui_state_t *state
 
 static void mse_frontend_ui_draw_sidebar_footer(mse_frontend_ui_state_t *state)
 {
-	//igDummy((ImVec2){0.0f, 16.0f});
 	igSeparator();
 	if (mse_frontend_ui_sidebar_action(MSE_ICON_SETTINGS, "Settings")) {
 		state->show_settings_window = true;
@@ -1013,24 +888,18 @@ void mse_frontend_ui_init(mse_frontend_ui_state_t *state)
 
 	state->show_demo_window		= false;
 	state->show_metrics_window	= false;
-	state->show_style_editor	= false;
-	state->show_settings_window = false;
-	state->show_power_confirm	= false;
+	state->show_licence_window	= false;
 	state->theme				= MSE_FRONTEND_THEME_MSE;
 	state->settings_tab			= MSE_FRONTEND_SETTINGS_TAB_GENERAL;
 	state->content_scale		= 1.0f;
 	state->window				= NULL;
-	state->core_view_requested	= false;
-	state->fullscreen			= false;
-	state->show_about_window	= false;
 
-	state->current_nav = MSE_FRONTEND_NAV_HOME; /* default to Home */
+	state->current_nav = MSE_FRONTEND_NAV_HOME;
 	memset(state->search_filter, 0, sizeof(state->search_filter));
 	state->selected_core_index = -1;
 	state->show_installed_only = false;
 	state->sidebar_width	   = 0.0f;
 
-	mse_frontend_ui_clear_logs();
 	if (g_frontend_file_dialog_event == 0) {
 		Uint32 event_id = SDL_RegisterEvents(1);
 		if (event_id != (Uint32)-1) {
@@ -1038,6 +907,7 @@ void mse_frontend_ui_init(mse_frontend_ui_state_t *state)
 		}
 	}
 
+	mse_frontend_library_view_init();
 	mse_frontend_register_cvars(state);
 }
 
@@ -1060,28 +930,45 @@ void mse_frontend_ui_draw(mse_frontend_ui_state_t *state)
 		}
 		if (igBeginMenu("Emulation", true)) igEndMenu();
 		if (igBeginMenu("View", true)) {
-			if (igMenuItem_BoolPtr("Fullscreen", "F11", &state->fullscreen, true)) {
-				SDL_SetWindowFullscreen(state->window, state->fullscreen);
+			if (igMenuItem_Bool("Fullscreen", "F11", state->fullscreen != 0, true)) {
+				state->fullscreen = !state->fullscreen;
+				SDL_SetWindowFullscreen(state->window, state->fullscreen != 0);
 			}
 			igEndMenu();
 		}
 		if (igBeginMenu("Tools", true)) {
+			igMenuItem_BoolPtr("Profiler", "F9", &state->show_profiler, true);
+			if (igMenuItem_Bool("Frame counter", NULL,
+			                    mse_frontend_profiler_framecounter_visible(), true)) {
+				mse_frontend_profiler_set_framecounter_visible(
+					!mse_frontend_profiler_framecounter_visible());
+			}
+			igSeparator();
 			igMenuItem_BoolPtr("ImGui Demo", NULL, &state->show_demo_window, true);
 			igMenuItem_BoolPtr("Metrics", NULL, &state->show_metrics_window, true);
 			igMenuItem_BoolPtr("Style Editor", NULL, &state->show_style_editor, true);
-			if (igMenuItem_Bool("Terminal", "F10", false, true)) {
-				state->show_terminal = true;
-			}
 			if (igMenuItem_Bool("Settings", NULL, false, true)) {
 				state->show_settings_window = true;
 			}
+			if (igBeginMenu("Lua", true)) {
+				if (igMenuItem_Bool("Terminal", "F10", state->show_terminal, true)) state->show_terminal = !state->show_terminal;
+				if (igMenuItem_Bool("Inspector", NULL, state->show_lua_debugger_window, true)) state->show_lua_debugger_window = !state->show_lua_debugger_window;
+				igEndMenu();
+			}
+
+			// Panels a backend defines for itself, in Lua. Contributes nothing
+			// when no loaded backend ships any.
+			if (mse_frontend_lua_ui_panel_count() > 0) {
+				igSeparator();
+				mse_frontend_lua_ui_draw_menu();
+			}
+
 			igEndMenu();
 		}
+
 		if (igBeginMenu("Help", true)) {
 			if (igMenuItem_Bool("About", NULL, false, true)) state->show_about_window = true;
-
 			if (igMenuItem_Bool("Licenses", NULL, false, true)) state->show_licence_window = true;
-
 			if (igMenuItem_Bool("Credits", NULL, false, true)) state->show_credits_window = true;
 			igEndMenu();
 		}
@@ -1114,33 +1001,10 @@ void mse_frontend_ui_draw(mse_frontend_ui_state_t *state)
 										ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
 										ImGuiWindowFlags_NoNavFocus;
 
-	/* Snap left dock to icon-only width if the user has resized it below threshold */
-	const float icon_only_width = 98.0f; /* target width when snapped */
-	const float snap_threshold	= 64.0f; /* if smaller than this, snap */
-	if (g_last_systems_width > 0.0f && g_last_systems_width < snap_threshold) {
-		igSetNextWindowSize((ImVec2){icon_only_width, viewport->WorkSize.y}, ImGuiCond_Always);
-		if (g_frontend_dock_layout_built && g_frontend_dock_left_id != 0) {
-			igDockBuilderSetNodeSize(g_frontend_dock_left_id, (ImVec2){icon_only_width, viewport->WorkSize.y});
-		}
-	}
-
-	igSetNextWindowDockID(g_frontend_dock_left_id, ImGuiCond_FirstUseEver);
-	if (igBegin("SYSTEMS_DOCK", NULL, pane_flags)) {
-		//igPushStyleVarY(ImGuiStyleVar_WindowPadding, 0.0f);
-		mse_frontend_ui_draw_systems_window(state);
-		//igPopStyleVar(1);
-	}
-	igEnd();
-
+	// Render purely the Center Frame. Tabs, systems dock, and inspector docks are entirely eliminated.
 	igSetNextWindowDockID(g_frontend_dock_center_id, ImGuiCond_FirstUseEver);
 	if (igBegin("CENTER_DOCK", NULL, pane_flags)) {
 		mse_frontend_ui_draw_center_window(state);
-	}
-	igEnd();
-
-	igSetNextWindowDockID(g_frontend_dock_right_id, ImGuiCond_FirstUseEver);
-	if (igBegin("INSPECTOR_DOCK", NULL, pane_flags)) {
-		mse_frontend_ui_draw_inspector_view(state);
 	}
 	igEnd();
 
@@ -1156,7 +1020,7 @@ void mse_frontend_ui_draw(mse_frontend_ui_state_t *state)
 	igEnd();
 
 	mse_frontend_ui_draw_settings_modal(state);
-	/* draw power confirmation modal if requested */
+
 	if (state->show_power_confirm) {
 		ImGuiViewport *viewport = igGetMainViewport();
 		if (viewport != NULL) {
@@ -1168,6 +1032,7 @@ void mse_frontend_ui_draw(mse_frontend_ui_state_t *state)
 		}
 		igOpenPopup_Str("EXIT_CONFIRM", 0);
 	}
+
 	if (igBeginPopupModal("EXIT_CONFIRM", &state->show_power_confirm, ImGuiWindowFlags_None)) {
 		igText("Exit Application");
 		igSeparator();
@@ -1184,15 +1049,15 @@ void mse_frontend_ui_draw(mse_frontend_ui_state_t *state)
 		igEndPopup();
 	}
 
-	if (state->show_demo_window) {
-		igShowDemoWindow(&state->show_demo_window);
-	}
-	if (state->show_metrics_window) {
-		igShowMetricsWindow(&state->show_metrics_window);
-	}
-	if (state->show_style_editor) {
-		igShowStyleEditor(NULL);
-	}
+	if (state->show_demo_window) igShowDemoWindow(&state->show_demo_window);
+	if (state->show_metrics_window) igShowMetricsWindow(&state->show_metrics_window);
+	if (state->show_style_editor) igShowStyleEditor(NULL);
+	if (state->show_lua_debugger_window) mse_frontend_ui_draw_lua_debugger(state);
+
+	// Backend-defined panels, drawn last so they stack above the frontend's own
+	// windows. Each panel is isolated in here, so one erroring cannot take the
+	// rest of the frame with it.
+	mse_frontend_lua_ui_draw();
 }
 
 static void SDLCALL mse_frontend_ui_open_rom_callback(void *userdata, const char *const *filelist, int filter)
@@ -1200,9 +1065,7 @@ static void SDLCALL mse_frontend_ui_open_rom_callback(void *userdata, const char
 	(void)userdata;
 	(void)filter;
 
-	if (g_frontend_file_dialog_event == 0) {
-		return;
-	}
+	if (g_frontend_file_dialog_event == 0) return;
 
 	char *selected_path = NULL;
 	if (filelist != NULL && filelist[0] != NULL && filelist[0][0] != '\0') {
@@ -1228,13 +1091,10 @@ static void mse_frontend_ui_open_rom_file_dialog(mse_frontend_ui_state_t *state)
 	static const SDL_DialogFileFilter filters[] = {{"ROM files", "nes;tnes;zip"}, {"All files", "*"}};
 	const char						 *default_location;
 
-	if (state == NULL) {
-		return;
-	}
+	if (state == NULL) return;
 
 	default_location = state->rom_path[0] != '\0' ? state->rom_path : NULL;
-	SDL_ShowOpenFileDialog(mse_frontend_ui_open_rom_callback, state, state->window, filters, 2, default_location,
-						   false);
+	SDL_ShowOpenFileDialog(mse_frontend_ui_open_rom_callback, state, state->window, filters, 2, default_location, false);
 }
 
 bool mse_frontend_ui_handle_event(mse_frontend_ui_state_t *state, const SDL_Event *event)

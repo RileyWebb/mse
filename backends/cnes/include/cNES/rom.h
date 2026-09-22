@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdbool.h>
 
 typedef enum ROM_Format {
     ROM_FORMAT_UNKNOWN = 0,
@@ -26,7 +27,8 @@ typedef struct ROM {
 
     uint8_t header[16];
 
-    uint8_t mapper_id;
+    uint16_t mapper_id; // NES 2.0 allows up to 4095, so this cannot be a byte
+    bool has_battery;   // Header says cartridge RAM is battery backed
     size_t prg_rom_size; // in 16KB units
     size_t chr_rom_size; // in 8KB units
     size_t trainer_size;

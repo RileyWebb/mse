@@ -1,0 +1,10 @@
+# Recorded results for AccuracyCoin page 9
+# Regenerate with: --arg update_baseline=1
+# A test fails when an entry recorded PASS here stops passing.
+PASS	page 09/$E3   ISC INDIRECT,X
+PASS	page 09/$E7   ISC ZEROPAGE
+PASS	page 09/$EF   ISC ABSOLUTE
+PASS	page 09/$F3   ISC INDIRECT,Y
+PASS	page 09/$F7   ISC ZEROPAGE,X
+PASS	page 09/$FB   ISC ABSOLUTE,Y
+PASS	page 09/$FF   ISC ABSOLUTE,X

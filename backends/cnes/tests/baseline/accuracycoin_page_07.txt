@@ -1,0 +1,13 @@
+# Recorded results for AccuracyCoin page 7
+# Regenerate with: --arg update_baseline=1
+# A test fails when an entry recorded PASS here stops passing.
+PASS	page 07/$83   SAX INDIRECT,X
+PASS	page 07/$87   SAX ZEROPAGE
+PASS	page 07/$8F   SAX ABSOLUTE
+PASS	page 07/$97   SAX ZEROPAGE,Y
+PASS	page 07/$A3   LAX INDIRECT,X
+PASS	page 07/$A7   LAX ZEROPAGE
+PASS	page 07/$AF   LAX ABSOLUTE
+PASS	page 07/$B3   LAX INDIRECT,Y
+PASS	page 07/$B7   LAX ZEROPAGE,Y
+PASS	page 07/$BF   LAX ABSOLUTE,X

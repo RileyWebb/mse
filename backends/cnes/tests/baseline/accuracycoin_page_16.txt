@@ -1,0 +1,10 @@
+# Recorded results for AccuracyCoin page 16
+# Regenerate with: --arg update_baseline=1
+# A test fails when an entry recorded PASS here stops passing.
+PASS	page 16/CHR ROM IS NOT WRITABLE
+PASS	page 16/PPU REGISTER MIRRORING
+PASS	page 16/PPU REGISTER OPEN BUS
+PASS	page 16/PPU READ BUFFER
+PASS	page 16/PALETTE RAM QUIRKS
+PASS	page 16/RENDERING FLAG BEHAVIOR
+FAIL	page 16/$2007 READ W/ RENDERING

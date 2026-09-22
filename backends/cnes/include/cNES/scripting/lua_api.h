@@ -28,6 +28,17 @@ void LuaScript_OnFrame(LuaScript* script);
 // Called once after loading script, before emulation starts
 void LuaScript_OnStart(LuaScript* script);
 
+// Expose a script argument as a string field of the global ARGS table.
+// Must be called before LuaScript_LoadFile so the script body can read it.
+int LuaScript_SetArg(LuaScript* script, const char* key, const char* value);
+
+// True if the script defines onrun(), meaning it drives emulation itself
+int LuaScript_HasRun(LuaScript* script);
+
+// Call the onrun() callback if it exists. The script is expected to run the
+// console to completion itself using step()/run_frames() and then exit.
+void LuaScript_OnRun(LuaScript* script);
+
 // Check if emulator should exit (set by lua function)
 int LuaScript_ShouldExit(LuaScript* script);
 

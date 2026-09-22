@@ -37,6 +37,7 @@ static inline float clampf(float val, float min_val, float max_val)
     return (val < min_val) ? min_val : ((val > max_val) ? max_val : val);
 }   
 
+// Producer side. Runs on the emulation thread and touches only the write index.
 static inline void apu_queue_sample(APU *apu, float sample)
 {
     if (!apu) {
@@ -46,14 +47,19 @@ static inline void apu_queue_sample(APU *apu, float sample)
     sample *= apu->output_volume;
     sample = clampf(sample, -1.0f, 1.0f);
 
-    if (apu->sample_buffer_count >= APU_SAMPLE_BUFFER_CAPACITY) {
-        apu->sample_buffer_read_index = (apu->sample_buffer_read_index + 1) % APU_SAMPLE_BUFFER_CAPACITY;
-        apu->sample_buffer_count--;
+    size_t write = atomic_load_explicit(&apu->sample_buffer_write_index, memory_order_relaxed);
+    size_t next  = (write + 1u) & APU_SAMPLE_BUFFER_MASK;
+
+    // Full. Drop the new sample rather than advancing the read index to make
+    // room: that index belongs to the consumer, and racing it for ownership is
+    // what made this buffer unsafe. A full ring means the consumer has stalled
+    // for ~185ms, at which point one dropped sample is not the problem.
+    if (next == atomic_load_explicit(&apu->sample_buffer_read_index, memory_order_acquire)) {
+        return;
     }
 
-    apu->sample_buffer[apu->sample_buffer_write_index] = sample;
-    apu->sample_buffer_write_index = (apu->sample_buffer_write_index + 1) % APU_SAMPLE_BUFFER_CAPACITY;
-    apu->sample_buffer_count++;
+    apu->sample_buffer[write] = sample;
+    atomic_store_explicit(&apu->sample_buffer_write_index, next, memory_order_release);
 }
 
 static inline uint8_t apu_pulse_volume(const APU_PulseChannel *pulse)
@@ -245,6 +251,8 @@ static inline void apu_dmc_restart(APU_DMCChannel *dmc)
     dmc->bytes_remaining = dmc->sample_length;
 }
 
+static void APU_RecalculateDMCPrediction(APU *apu);
+
 static inline void apu_clock_dmc(APU *apu)
 {
     APU_DMCChannel *dmc = &apu->dmc;
@@ -396,32 +404,50 @@ void APU_Reset(APU *apu)
     }
 
     NES *nes = apu->nes;
-    float volume = apu->output_volume;
 
-    memset(apu, 0, sizeof(*apu));
+    // Reset the channels and the sequencer, but deliberately not the sample ring:
+    // the audio thread is reading from it concurrently, and memsetting across its
+    // indices from this thread would race with it. Whatever is already queued
+    // just drains normally.
+    memset(apu->pulse, 0, sizeof(apu->pulse));
+    memset(&apu->triangle, 0, sizeof(apu->triangle));
+    memset(&apu->noise, 0, sizeof(apu->noise));
+    memset(&apu->dmc, 0, sizeof(apu->dmc));
 
-    apu->nes = nes;
-    apu->output_volume = volume > 0.0f ? volume : 1.0f;
-    apu->next_dmc_dma_cycle = UINT64_MAX;
-    apu->cycles_per_sample = 0.0;
-    apu->sample_cycle_accumulator = 0.0;
+    apu->cpu_cycle_counter = 0;
+    apu->frame_cycle = 0;
     apu->frame_mode_five_step = false;
     apu->frame_irq_inhibit = false;
     apu->frame_irq_flag = false;
+    apu->dmc_dma_pending = false;
+    apu->sample_cycle_accumulator = 0.0;
+    apu->next_dmc_dma_cycle = UINT64_MAX;
 
-    if (apu->nes) {
-        int sample_rate = apu->nes->settings.audio.sample_rate > 0 ? apu->nes->settings.audio.sample_rate : 44100;
-        float cpu_rate = apu->nes->settings.timing.cpu_clock_rate > 0.0f ? apu->nes->settings.timing.cpu_clock_rate : 1789773.0f;
-        apu->cycles_per_sample = (double)cpu_rate / (double)sample_rate;
-        if (apu->nes->settings.audio.volume > 0.0f) {
-            apu->output_volume *= apu->nes->settings.audio.volume;
-        }
+    int sample_rate = 44100;
+    double cpu_rate = 1789773.0;
+    float volume = 1.0f;
+    if (nes) {
+        if (nes->settings.audio.sample_rate > 0) sample_rate = nes->settings.audio.sample_rate;
+        if (nes->settings.timing.cpu_clock_rate > 0.0f) cpu_rate = (double)nes->settings.timing.cpu_clock_rate;
+        if (nes->settings.audio.volume > 0.0f) volume = nes->settings.audio.volume;
     }
 
-    apu->pulse[0].duty = 0;
-    apu->pulse[1].duty = 0;
+    // Assign the configured gain, never fold it into the previous value. This
+    // used to be `*=`, so every reset multiplied the setting in again and the
+    // emulator got quieter each time it was reset.
+    apu->output_volume = volume;
+    apu->cycles_per_sample = cpu_rate / (double)sample_rate;
+
     apu->noise.shift_register = 1;
-    apu->dmc.output_level = 0;
+
+    // What the DMC registers read as at power on. These are derived values, so
+    // zeroing the struct is not the same as the registers being zero:
+    // $4010 = 0 selects the slowest rate, $4012 = 0 means $C000, and $4013 = 0
+    // means a one-byte sample, not a zero-byte one.
+    apu->dmc.timer_period   = dmc_period_table[0];
+    apu->dmc.sample_address = 0xC000;
+    apu->dmc.sample_length  = 1;
+    apu->dmc.sample_buffer_empty = true;
 }
 
 void APU_CatchUp(APU *apu)
@@ -467,7 +493,7 @@ void APU_HandleDMCDMA(struct NES *nes) {
         return;
     }
 
-    nes->cpu->total_cycles += 4; // CPU stalls for DMA
+    CPU_Stall(nes->cpu, 4); // CPU stalls for DMA
 
     // Prevent recursive DMA trigger during BUS_Read
     apu->next_dmc_dma_cycle = UINT64_MAX;
@@ -507,34 +533,41 @@ size_t APU_GetBufferedSampleCount(APU *apu)
         return 0;
     }
 
-    return apu->sample_buffer_count;
+    size_t write = atomic_load_explicit(&apu->sample_buffer_write_index, memory_order_acquire);
+    size_t read  = atomic_load_explicit(&apu->sample_buffer_read_index, memory_order_acquire);
+    return (write - read) & APU_SAMPLE_BUFFER_MASK;
 }
 
+// Consumer side. Runs on the audio thread and touches only the read index.
 size_t APU_ReadSamples(APU *apu, float *dst, size_t max_samples)
 {
-    if (!apu || !dst || max_samples == 0 || apu->sample_buffer_count == 0) {
+    if (!apu || !dst || max_samples == 0) {
         return 0;
     }
 
+    size_t read  = atomic_load_explicit(&apu->sample_buffer_read_index, memory_order_relaxed);
+    size_t write = atomic_load_explicit(&apu->sample_buffer_write_index, memory_order_acquire);
+
     size_t samples_read = 0;
-    while (samples_read < max_samples && apu->sample_buffer_count > 0) {
-        dst[samples_read++] = apu->sample_buffer[apu->sample_buffer_read_index];
-        apu->sample_buffer_read_index = (apu->sample_buffer_read_index + 1) % APU_SAMPLE_BUFFER_CAPACITY;
-        apu->sample_buffer_count--;
+    while (samples_read < max_samples && read != write) {
+        dst[samples_read++] = apu->sample_buffer[read];
+        read = (read + 1u) & APU_SAMPLE_BUFFER_MASK;
     }
 
+    atomic_store_explicit(&apu->sample_buffer_read_index, read, memory_order_release);
     return samples_read;
 }
 
+// Consumer-side drain. Only the read index moves, so this stays safe to call
+// while the emulation thread is still producing.
 void APU_ClearSampleBuffer(APU *apu)
 {
     if (!apu) {
         return;
     }
 
-    apu->sample_buffer_read_index = 0;
-    apu->sample_buffer_write_index = 0;
-    apu->sample_buffer_count = 0;
+    size_t write = atomic_load_explicit(&apu->sample_buffer_write_index, memory_order_acquire);
+    atomic_store_explicit(&apu->sample_buffer_read_index, write, memory_order_release);
 }
 
 void APU_Clock(APU *apu, uint32_t cpu_cycles)
@@ -557,6 +590,10 @@ void APU_Clock(APU *apu, uint32_t cpu_cycles)
             }
         }
     }
+
+    // The sample buffer may have drained during the loop above. Re-derive when
+    // the next fetch is due so a request can never be silently dropped.
+    APU_RecalculateDMCPrediction(apu);
 }
 
 uint8_t APU_ReadRegister(APU *apu, uint16_t addr)

@@ -132,7 +132,10 @@ void mse_frontend_ui_draw_settings_modal(mse_frontend_ui_state_t *state)
 		case MSE_FRONTEND_SETTINGS_TAB_VIDEO:
 		{
 			igTextColored(SETTINGS_HEADER_COLOR, "Display");
-			igCheckbox("Enable Fullscreen", &state->fullscreen);
+			bool fullscreen = state->fullscreen != 0;
+			if (igCheckbox("Enable Fullscreen", &fullscreen)) {
+				state->fullscreen = fullscreen;
+			}
 			
 			// Dynamically populated resolution list specific to the current monitor
             int temp = 0;

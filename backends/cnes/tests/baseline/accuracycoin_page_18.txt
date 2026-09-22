@@ -1,0 +1,12 @@
+# Recorded results for AccuracyCoin page 18
+# Regenerate with: --arg update_baseline=1
+# A test fails when an entry recorded PASS here stops passing.
+PASS	page 18/SPRITE OVERFLOW BEHAVIOR
+PASS	page 18/SPRITE 0 HIT BEHAVIOR
+FAIL	page 18/$2002 FLAG TIMING
+PASS	page 18/SUDDENLY RESIZE SPRITE
+FAIL	page 18/ARBITRARY SPRITE ZERO
+PASS	page 18/MISALIGNED OAM BEHAVIOR
+FAIL	page 18/ADDRESS $2004 BEHAVIOR
+FAIL	page 18/OAM CORRUPTION
+FAIL	page 18/INC $4014

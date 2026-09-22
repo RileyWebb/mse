@@ -13,19 +13,38 @@
 #include "cNES/util.h"
 #include "cNES/cpu.h"
 
+#include <limits.h>
+
 #include "cNES/ppu.h"
 
 #if defined(__SSE2__) || defined(_M_AMD64) || defined(_M_X64) || (_M_IX86_FP == 2)
 #define PPU_USE_SIMD_COLOR_EMPHASIS
 #endif
 
+// Build with -DPPU_NO_SIMD_COLOR_EMPHASIS to force the scalar path. The two are
+// meant to produce identical output; having a supported way to select one is
+// what makes that checkable.
+#ifdef PPU_NO_SIMD_COLOR_EMPHASIS
+#undef PPU_USE_SIMD_COLOR_EMPHASIS
+#endif
+
 #ifdef PPU_USE_SIMD_COLOR_EMPHASIS
 #include <emmintrin.h> // SSE2 intrinsics
 #endif
 
-//#undef PPU_USE_SIMD_COLOR_EMPHASIS
-
 #define PPU_OPEN_BUS_DECAY_MS 750ULL
+
+// Palette entries are 0xAABBGGRR: alpha in bits 24-31, then blue, green, red.
+// Red is the low byte, so in memory on a little-endian host the bytes run
+// R,G,B,A -- plain RGBA8. That is the layout PALETTE_default holds; checking a
+// few entries against the canonical NES colours is what pins it down (index 1
+// is 0x0000FC blue, stored as 0xFFFC0000).
+//
+// Both paths below used to disagree about this, so an SSE2 build and a scalar
+// build tinted emphasised scenes differently. They now agree, and share the
+// same 8.8 fixed-point attenuation so their output is bit-identical.
+#define PPU_EMPHASIS_UNITY 256u
+#define PPU_EMPHASIS_ATTEN 192u // 0.75 in 8.8 fixed point
 
 #ifndef PPU_USE_SIMD_COLOR_EMPHASIS
 static inline uint32_t apply_color_emphasis(const uint32_t* base_color, uint8_t ppu_mask)
@@ -34,99 +53,116 @@ static inline uint32_t apply_color_emphasis(const uint32_t* base_color, uint8_t 
     if (!(ppu_mask & 0xE0)) return *base_color;
 
     uint32_t c = *base_color;
-    
-    // Extract: RGBA layout assumes Red is at LSB
-    float r = (float)(c >> 24 & 0xFF);
-    float g = (float)((c >> 16) & 0xFF);
-    float b = (float)((c >> 8) & 0xFF);
-    uint32_t a = c & 0x000000FF; // Preserve Alpha
 
-    const float f = 0.75f;
-    float r_mult = 1.0f, g_mult = 1.0f, b_mult = 1.0f;
+    uint32_t a = (c >> 24) & 0xFF;
+    uint32_t b = (c >> 16) & 0xFF;
+    uint32_t g = (c >> 8) & 0xFF;
+    uint32_t r = c & 0xFF;
 
-    // Apply attenuation to the channels NOT emphasized
-    if (ppu_mask & PPUMASK_EMPHASIZE_RED)   { g_mult = f; b_mult = f; }
-    if (ppu_mask & PPUMASK_EMPHASIZE_GREEN) { r_mult = f; b_mult = f; }
-    if (ppu_mask & PPUMASK_EMPHASIZE_BLUE)  { r_mult = f; g_mult = f; }
+    uint32_t r_mult = PPU_EMPHASIS_UNITY, g_mult = PPU_EMPHASIS_UNITY, b_mult = PPU_EMPHASIS_UNITY;
 
-    uint32_t R = (uint32_t)(r * r_mult);
-    uint32_t G = (uint32_t)(g * g_mult);
-    uint32_t B = (uint32_t)(b * b_mult);
+    // Emphasising a channel attenuates the other two
+    if (ppu_mask & PPUMASK_EMPHASIZE_RED)   { g_mult = PPU_EMPHASIS_ATTEN; b_mult = PPU_EMPHASIS_ATTEN; }
+    if (ppu_mask & PPUMASK_EMPHASIZE_GREEN) { r_mult = PPU_EMPHASIS_ATTEN; b_mult = PPU_EMPHASIS_ATTEN; }
+    if (ppu_mask & PPUMASK_EMPHASIZE_BLUE)  { r_mult = PPU_EMPHASIS_ATTEN; g_mult = PPU_EMPHASIS_ATTEN; }
 
-    // Reconstruct RGBA
-    return a | (B << 8) | (G << 16) | (R << 24);
+    r = (r * r_mult) >> 8;
+    g = (g * g_mult) >> 8;
+    b = (b * b_mult) >> 8;
+
+    return (a << 24) | (b << 16) | (g << 8) | r;
 }
-#else  
+#else
 static inline uint32_t apply_color_emphasis(const uint32_t* base_color, uint8_t ppu_mask)
 {
     if (!(ppu_mask & 0xE0)) return *base_color;
 
     __m128i color_vec = _mm_cvtsi32_si128(*base_color);
-    // Unpack bytes to 16-bit words. Result: [0, Alpha, 0, Blue, 0, Green, 0, Red]
-    color_vec = _mm_unpacklo_epi8(color_vec, _mm_setzero_si128()); 
+    // Unpack bytes to 16-bit words, low byte first. For 0xAABBGGRR on a
+    // little-endian host that gives w0 = Red, w1 = Green, w2 = Blue, w3 = Alpha.
+    color_vec = _mm_unpacklo_epi8(color_vec, _mm_setzero_si128());
 
-    const uint16_t atten = 192; // 0.75 * 256
-    uint16_t r_f = 256, g_f = 256, b_f = 256;
+    uint16_t r_f = PPU_EMPHASIS_UNITY, g_f = PPU_EMPHASIS_UNITY, b_f = PPU_EMPHASIS_UNITY;
 
-    if (ppu_mask & PPUMASK_EMPHASIZE_RED)   { g_f = atten; b_f = atten; }
-    if (ppu_mask & PPUMASK_EMPHASIZE_GREEN) { r_f = atten; b_f = atten; }
-    if (ppu_mask & PPUMASK_EMPHASIZE_BLUE)  { r_f = atten; g_f = atten; }
+    if (ppu_mask & PPUMASK_EMPHASIZE_RED)   { g_f = PPU_EMPHASIS_ATTEN; b_f = PPU_EMPHASIS_ATTEN; }
+    if (ppu_mask & PPUMASK_EMPHASIZE_GREEN) { r_f = PPU_EMPHASIS_ATTEN; b_f = PPU_EMPHASIS_ATTEN; }
+    if (ppu_mask & PPUMASK_EMPHASIZE_BLUE)  { r_f = PPU_EMPHASIS_ATTEN; g_f = PPU_EMPHASIS_ATTEN; }
 
-    // Map factors to match [Alpha, Blue, Green, Red] order
-    // _mm_set_epi16 parameters are (w7, w6, w5, w4, w3, w2, w1, w0)
-    // w0 corresponds to Red, w1 to Green, w2 to Blue, w3 to Alpha
-    __m128i factors = _mm_set_epi16(0, 0, 0, 0, 256, b_f, g_f, r_f);
+    // _mm_set_epi16 takes (w7 ... w0), so the factors run Alpha, Blue, Green, Red
+    // to line up with the unpacked order above.
+    __m128i factors = _mm_set_epi16(0, 0, 0, 0, (short)PPU_EMPHASIS_UNITY, (short)b_f, (short)g_f, (short)r_f);
 
     color_vec = _mm_mullo_epi16(color_vec, factors);
     color_vec = _mm_srli_epi16(color_vec, 8); // Shift back to 8-bit range
-    
-    // Pack 16-bit words back to 8-bit bytes (RGBA)
+
     color_vec = _mm_packus_epi16(color_vec, _mm_setzero_si128());
 
     return (uint32_t)_mm_cvtsi128_si32(color_vec);
 }
 #endif // PPU_USE_SIMD_COLOR_EMPHASIS
 
-static inline void ppu_update_active_palette(PPU *ppu)
+// Palette RAM mirroring: $3F10/$14/$18/$1C alias $3F00/$04/$08/$0C.
+static const uint8_t pal_indices[32] = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+    0, 17, 18, 19, 4, 21, 22, 23, 8, 25, 26, 27, 12, 29, 30, 31
+};
+
+// Cheap: 32 entries, no emphasis maths. Everything the pixel loop needs about
+// palette RAM, resolved once here instead of per pixel.
+static void ppu_rebuild_render_palette(PPU *ppu)
+{
+    // Grayscale forces the low four bits of the colour index to zero, selecting
+    // the grey column of the NES palette. It belongs here rather than in the
+    // pixel loop, where it was simply missing.
+    const uint8_t mask = (ppu->mask & PPUMASK_GRAYSCALE) ? 0x30u : 0x3Fu;
+
+    for (int i = 0; i < 32; ++i) {
+        uint8_t index = (uint8_t)(ppu->palette[pal_indices[i]] & mask);
+        ppu->final_index[i] = index;
+        ppu->final_color[i] = ppu->active_palette[index];
+    }
+}
+
+// Expensive: 64 emphasis computations. Only the emphasis bits or the base
+// palette can invalidate this, so palette RAM writes no longer trigger it --
+// they used to, redoing all 64 for a change that cannot affect them.
+static void ppu_update_active_palette(PPU *ppu)
 {
     for (int i = 0; i < 64; ++i) {
         const uint32_t *base_color = &ppu->nes->settings.video.palette[i];
         ppu->active_palette[i] = apply_color_emphasis(base_color, ppu->mask);
     }
+    ppu_rebuild_render_palette(ppu);
 }
 
 uint64_t PPU_GetTotalCycles(PPU *ppu) {
-    if (!ppu || !ppu->nes) return 0;
-    
-    uint64_t cycles_per_scanline = ppu->cycles_per_scanline;
-    uint64_t cycles_per_frame = (ppu->scanline_prerender + 1) * cycles_per_scanline;
-    
-    int scanline = ppu->scanline;
-    if (scanline < 0) scanline = ppu->scanline_prerender;
+    if (!ppu) return 0;
 
-    // Calculate absolute total cycles elapsed since boot/reset
-    uint64_t current_absolute = ppu->frame_count * cycles_per_frame + (uint64_t)scanline * cycles_per_scanline + ppu->cycle;
-    
-    // Offset by the PPU's starting scanline to normalize starting cycles to 0
-    uint64_t start_absolute = ppu->scanline_prerender * cycles_per_scanline;
-    
-    if (current_absolute < start_absolute) return 0;
-    return current_absolute - start_absolute;
+    return ppu->total_cycles;
 }
+
+// Runs at least one PPU tick and at most `budget`, returning how many it ran.
+// Defined below PPU_Step, which it falls back to.
+static uint32_t ppu_run_span(PPU *ppu, uint64_t budget);
 
 void PPU_CatchUp(PPU *ppu) {
     if (!ppu || !ppu->nes || !ppu->nes->cpu) return;
-    
+
+    // The PPU is only ever observed from an instruction boundary or from a
+    // register access, and both call this first. That is what makes it safe to
+    // run a whole span of ticks with the state that cannot change during it --
+    // the mask, the scroll, the palette -- hoisted out of the loop, and to skip
+    // outright over the stretches where a tick provably does nothing at all.
     uint64_t target_ppu_cycles = ppu->nes->cpu->total_cycles * 3;
-    while (PPU_GetTotalCycles(ppu) < target_ppu_cycles) {
-        PPU_Step(ppu);
+    while (ppu->total_cycles < target_ppu_cycles) {
+        ppu_run_span(ppu, target_ppu_cycles - ppu->total_cycles);
     }
 }
 
 static inline uint64_t ppu_now_ms(PPU *ppu)
 {
     // NTSC PPU clock is ~5.369 MHz, so ~5369 cycles per millisecond
-    return PPU_GetTotalCycles(ppu) / 5369ULL;
+    return ppu->total_cycles / 5369ULL;
 }
 
 static inline void ppu_decay_open_bus(PPU *ppu)
@@ -147,11 +183,6 @@ static inline void ppu_drive_open_bus(PPU *ppu, uint8_t value)
     ppu->open_bus_last_update_ms = ppu_now_ms(ppu);
 }
 
-static const uint8_t pal_indices[32] = {
-    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-    0, 17, 18, 19, 4, 21, 22, 23, 8, 25, 26, 27, 12, 29, 30, 31
-};
-
 static inline uint8_t ppu_palette_read(PPU *ppu, uint16_t addr)
 {
     return ppu->palette[pal_indices[addr & 0x1F]];
@@ -160,7 +191,7 @@ static inline uint8_t ppu_palette_read(PPU *ppu, uint16_t addr)
 static inline void ppu_palette_write(PPU *ppu, uint16_t addr, uint8_t value)
 {
     ppu->palette[pal_indices[addr & 0x1F]] = value;
-    ppu_update_active_palette(ppu);
+    ppu_rebuild_render_palette(ppu);
 }
 
 static inline void ppu_update_nmi_line(PPU *ppu)
@@ -180,9 +211,21 @@ static inline void ppu_update_nmi_line(PPU *ppu)
     ppu->previous_nmi_output = true;
 }
 
+// Mappers that time an IRQ off the PPU's A12 line need to see every address the
+// PPU drives, not just the pattern-table ones -- the nametable fetches are what
+// hold A12 low between rises.
+static inline void ppu_notify_mapper_addr(PPU *ppu, uint16_t addr)
+{
+    BUS *bus = ppu->nes->bus;
+    if (bus->mapper_info->ppu_addr) {
+        bus->mapper_info->ppu_addr(bus, addr);
+    }
+}
+
 static inline uint8_t ppu_read_vram(PPU *ppu, uint16_t addr)
 {
     addr &= 0x3FFF;
+    ppu_notify_mapper_addr(ppu, addr);
 
     if (addr < 0x2000) { // CHR ROM/RAM ($0000 - $1FFF)
         return BUS_PPU_ReadCHR(ppu->nes->bus, addr);
@@ -199,6 +242,7 @@ static inline uint8_t ppu_read_vram(PPU *ppu, uint16_t addr)
 static inline void ppu_write_vram(PPU *ppu, uint16_t addr, uint8_t value)
 {
     addr &= 0x3FFF;
+    ppu_notify_mapper_addr(ppu, addr);
 
     if (addr < 0x2000) { // CHR RAM ($0000 - $1FFF)
         BUS_PPU_WriteCHR(ppu->nes->bus, addr, value);
@@ -366,7 +410,15 @@ static void fetch_sprite_patterns(PPU *ppu)
 {
     uint8_t sprite_height = (ppu->ctrl & PPUCTRL_SPRITE_SIZE) ? 16 : 8;
 
-    memset(ppu->scanline_sprite_buffer, 0, sizeof(ppu->scanline_sprite_buffer));
+    // Clear only what the previous fetch actually wrote. A full wipe zeroed 16
+    // cache lines a scanline so the pixel loop could read them once; at most 8
+    // sprites x 8 pixels of that was ever real data. The length is a constant 8
+    // entries so this stays inline stores rather than a memset call.
+    for (uint8_t i = 0; i < ppu->sprite_span_count; ++i) {
+        memset(&ppu->scanline_sprite_buffer[ppu->sprite_span_x[i]], 0,
+               8 * sizeof(ppu->scanline_sprite_buffer[0]));
+    }
+    ppu->sprite_span_count = 0;
 
     // Evaluate sprites from back to front (7 down to 0) so that lower-index (higher priority) sprites overwrite higher-index ones.
     for (int i = ppu->sprite_count_current_scanline - 1; i >= 0; --i) {
@@ -404,8 +456,17 @@ static void fetch_sprite_patterns(PPU *ppu)
         }
 
         bool is_foreground = !(attributes & 0x20);
-        bool is_sprite_0 = (i == 0); // First processed sprite in secondary OAM is "sprite zero"
+        // Sprite zero is OAM entry 0, not whichever sprite happened to land first
+        // in secondary OAM. Those coincide only when sprite 0 is on this
+        // scanline; otherwise treating slot 0 as sprite zero fires the hit for an
+        // unrelated sprite and moves every split that depends on it.
+        bool is_sprite_0 = (original_oam_index == 0);
         uint8_t palette_base = attributes & 0x03;
+
+        // Recorded whether or not any pixel turns out opaque: the span is what
+        // the next fetch has to clear, and a transparent pixel here may still be
+        // sitting on top of one a later (lower priority) sprite wrote.
+        ppu->sprite_span_x[ppu->sprite_span_count++] = sprite_x;
 
         for (int px = 0; px < 8; ++px) {
             int screen_x = sprite_x + px;
@@ -446,13 +507,15 @@ PPU *PPU_Create(NES *nes)
 
 void PPU_Reset(PPU *ppu)
 {
-    if (ppu->vram) memset(ppu->vram, 0, sizeof(ppu->vram));
-    if (ppu->palette) memset(ppu->palette, 0, sizeof(ppu->palette));
-    if (ppu->oam) memset(ppu->oam, 0, sizeof(ppu->oam));
-    if (ppu->secondary_oam) memset(ppu->secondary_oam, 0xFF, sizeof(ppu->secondary_oam));
-    if (ppu->secondary_oam_original_indices)
-        memset(ppu->secondary_oam_original_indices, 0, sizeof(ppu->secondary_oam_original_indices));
-    if (ppu->sprite_shifters) memset(ppu->sprite_shifters, 0, sizeof(ppu->sprite_shifters));
+    memset(ppu->vram, 0, sizeof(ppu->vram));
+    memset(ppu->palette, 0, sizeof(ppu->palette));
+    memset(ppu->oam, 0, sizeof(ppu->oam));
+    memset(ppu->secondary_oam, 0xFF, sizeof(ppu->secondary_oam));
+    memset(ppu->secondary_oam_original_indices, 0, sizeof(ppu->secondary_oam_original_indices));
+    // The sprite buffer is now cleared incrementally, span by span, so a reset
+    // has to wipe it here rather than relying on the next fetch to do it.
+    memset(ppu->scanline_sprite_buffer, 0, sizeof(ppu->scanline_sprite_buffer));
+    ppu->sprite_span_count = 0;
 
     ppu->ctrl     = 0;
     ppu->mask     = 0;
@@ -468,10 +531,24 @@ void PPU_Reset(PPU *ppu)
     ppu->vram_addr = 0;
     ppu->temp_addr = 0;
 
-    ppu->scanline    = ppu->scanline_prerender;
-    ppu->cycle       = 0;
-    ppu->frame_odd   = false;
-    ppu->frame_count = 0;
+    // Refresh the cached timing before anything reads it. This used to happen at
+    // the very end of PPU_Reset, so the first reset placed the PPU using a
+    // scanline_prerender that was still zero.
+    if (ppu->nes) {
+        ppu->scanline_prerender  = ppu->nes->settings.timing.scanline_prerender;
+        ppu->scanline_vblank     = ppu->nes->settings.timing.scanline_vblank;
+        ppu->scanlines_visible   = ppu->nes->settings.timing.scanlines_visible;
+        ppu->cycles_per_scanline = ppu->nes->settings.timing.cycles_per_scanline;
+    }
+    if (ppu->cycles_per_scanline <= 0) {
+        ppu->cycles_per_scanline = 341;
+    }
+
+    ppu->scanline     = ppu->scanline_prerender;
+    ppu->cycle        = 0;
+    ppu->frame_odd    = false;
+    ppu->frame_count  = 0;
+    ppu->total_cycles = 0;
 
     ppu->nmi_occured           = false;
     ppu->nmi_output            = false;
@@ -489,8 +566,7 @@ void PPU_Reset(PPU *ppu)
     ppu->bg_attrib_shift_low   = 0;
     ppu->bg_attrib_shift_high  = 0;
 
-    ppu->sprite_count_current_scanline       = 0;
-    ppu->sprite_zero_found_for_next_scanline = false;
+    ppu->sprite_count_current_scanline = 0;
 
     if (!ppu->internal_framebuffer) {
         ppu->internal_framebuffer = calloc(PPU_FRAMEBUFFER_WIDTH * PPU_FRAMEBUFFER_HEIGHT, sizeof(uint32_t));
@@ -527,14 +603,6 @@ void PPU_Reset(PPU *ppu)
     ppu->mirror_mode = MIRROR_HORIZONTAL;
     PPU_SetMirroring(ppu, ppu->mirror_mode);
 
-    // Cache timing settings for performance
-    if (ppu->nes) {
-        ppu->scanline_prerender = ppu->nes->settings.timing.scanline_prerender;
-        ppu->scanline_vblank = ppu->nes->settings.timing.scanline_vblank;
-        ppu->scanlines_visible = ppu->nes->settings.timing.scanlines_visible;
-        ppu->cycles_per_scanline = ppu->nes->settings.timing.cycles_per_scanline;
-    }
-
     // Precalculate palette lookup mapping explicitly on reset.
     ppu_update_active_palette(ppu);
 }
@@ -547,10 +615,17 @@ uint8_t PPU_ReadRegister(PPU *ppu, uint16_t addr)
     uint8_t data = ppu->open_bus;
     switch (addr & 0x0007) {
    case 0x0002: { // PPUSTATUS ($2002)
-        // Check exact timing alignment mapping limits for VBLANK edge suppression 
-        bool read_before_vblank = 
-            (ppu->scanline == ppu->scanline_prerender && ppu->cycle >= 339) ||
-            (ppu->scanline == ppu->scanline_vblank && ppu->cycle <= 1);
+        // Reading on the exact tick the VBlank flag would be set suppresses both
+        // the flag and the NMI for that frame.
+        //
+        // The window used to be several cycles wide on either side, padding for
+        // reads that landed early because the clock only moved between
+        // instructions. Now that the read is timed at the cycle it happens, the
+        // padding is not only unnecessary but harmful: the pre-render arm set the
+        // suppress flag ~240 scanlines before the VBlank it would go on to
+        // cancel, and the `cycle <= 1` arm fired after the flag was already set,
+        // so it cancelled the *following* frame's VBlank instead.
+        bool read_before_vblank = (ppu->scanline == ppu->scanline_vblank && ppu->cycle == 0);
 
         if (read_before_vblank) {
             ppu->suppress_vblank_start = true;
@@ -607,12 +682,18 @@ void PPU_WriteRegister(PPU *ppu, uint16_t addr, uint8_t value)
         ppu_update_nmi_line(ppu);
         break;
 
-    case 0x0001: // PPUMASK ($2001)
-        if (ppu->mask != value) {
+    case 0x0001: { // PPUMASK ($2001)
+        uint8_t changed = (uint8_t)(ppu->mask ^ value);
+        if (changed) {
             ppu->mask = value;
-            ppu_update_active_palette(ppu);
+            if (changed & 0xE0u) {
+                ppu_update_active_palette(ppu);  // emphasis moved: redo all 64
+            } else if (changed & PPUMASK_GRAYSCALE) {
+                ppu_rebuild_render_palette(ppu); // grayscale only: 32 entries
+            }
         }
         break;
+    }
 
     case 0x0002: // PPUSTATUS ($2002) - Read-only
         break;
@@ -662,11 +743,6 @@ void PPU_WriteRegister(PPU *ppu, uint16_t addr, uint8_t value)
         ppu->vram_addr &= 0x3FFF;
         break;
     }
-}
-
-inline void PPU_DoOAMDMA(PPU *ppu, const uint8_t *dma_page_data)
-{
-    memcpy(ppu->oam, dma_page_data, 256);
 }
 
 void PPU_DriveOpenBus(PPU *ppu, uint8_t value)
@@ -723,14 +799,109 @@ void PPU_SetMirroring(PPU *ppu, MirrorMode mode)
     }
 }
 
+// Last cycle of the current scanline. On odd frames the hardware drops the
+// final tick of the pre-render line and jumps straight into the next frame.
+// Both PPU_Step and the span runner need this, so it lives in one place.
+static inline int ppu_last_cycle_of_line(const PPU *ppu)
+{
+    int last = ppu->cycles_per_scanline - 1;
+    if (ppu->scanline == ppu->scanline_prerender && ppu->frame_odd && (ppu->mask & PPUMASK_SHOW_BG)) {
+        last -= 1;
+    }
+    return last;
+}
+
+// Everything the pixel loop needs that cannot change while a span is running.
+// Built once per span instead of once per pixel: the shifter tap depends only
+// on fine_x, the two left-edge thresholds only on the mask, and the row
+// pointers only on the scanline. All three used to be recomputed 61440 times a
+// frame, along with two null checks and a multiply.
+typedef struct PPU_PixelCtx {
+    uint32_t *fb_row;       // Framebuffer row for this scanline, or NULL
+    uint8_t  *ifb_row;      // Indexed framebuffer row, or NULL
+    uint16_t  bit_selector; // 0x8000 >> fine_x: the background shifter tap
+    int       bg_left;      // First x showing background; 256 means never
+    int       spr_left;     // First x showing sprites; 256 means never
+} PPU_PixelCtx;
+
+static inline void ppu_build_pixel_ctx(PPU *ppu, int y, PPU_PixelCtx *ctx)
+{
+    const int row = y * PPU_FRAMEBUFFER_WIDTH;
+
+    ctx->fb_row       = ppu->framebuffer ? ppu->framebuffer + row : NULL;
+    ctx->ifb_row      = ppu->indexed_framebuffer ? ppu->indexed_framebuffer + row : NULL;
+    ctx->bit_selector = (uint16_t)(0x8000u >> ppu->fine_x);
+
+    // (mask & SHOW) && (x >= 8 || (mask & CLIP)), turned into one threshold.
+    ctx->bg_left  = (ppu->mask & PPUMASK_SHOW_BG)
+                        ? ((ppu->mask & PPUMASK_CLIP_BG) ? 0 : 8) : 256;
+    ctx->spr_left = (ppu->mask & PPUMASK_SHOW_SPRITES)
+                        ? ((ppu->mask & PPUMASK_CLIP_SPRITES) ? 0 : 8) : 256;
+}
+
+static inline void ppu_emit_pixel(PPU *ppu, int x, const PPU_PixelCtx *ctx)
+{
+    uint8_t bg_pixel_pattern_val = 0;
+    uint8_t bg_palette_idx       = 0;
+
+    const bool bg_visible_at_pixel = (x >= ctx->bg_left);
+    if (bg_visible_at_pixel) {
+        const uint16_t bit_selector = ctx->bit_selector;
+        uint8_t pt_bit0 = (ppu->bg_pattern_shift_low & bit_selector) ? 1 : 0;
+        uint8_t pt_bit1 = (ppu->bg_pattern_shift_high & bit_selector) ? 1 : 0;
+        bg_pixel_pattern_val = (pt_bit1 << 1) | pt_bit0;
+
+        uint8_t attrib_bit0 = (ppu->bg_attrib_shift_low & bit_selector) ? 1 : 0;
+        uint8_t attrib_bit1 = (ppu->bg_attrib_shift_high & bit_selector) ? 1 : 0;
+        bg_palette_idx      = (attrib_bit1 << 1) | attrib_bit0;
+    }
+
+    uint8_t spr_palette_idx   = 0;
+    bool    spr_is_opaque     = false;
+    bool    spr_is_foreground = true;
+
+    const bool sprites_visible_at_pixel = (x >= ctx->spr_left);
+    bool sprite_0_opaque_at_pixel = false;
+
+    if (sprites_visible_at_pixel && ppu->scanline_sprite_buffer[x].is_opaque) {
+        spr_is_opaque            = true;
+        spr_is_foreground        = ppu->scanline_sprite_buffer[x].is_foreground;
+        sprite_0_opaque_at_pixel = ppu->scanline_sprite_buffer[x].is_sprite_0;
+        spr_palette_idx          = ppu->scanline_sprite_buffer[x].palette_idx;
+    }
+
+    if (sprite_0_opaque_at_pixel && bg_pixel_pattern_val != 0 && bg_visible_at_pixel &&
+        sprites_visible_at_pixel &&
+        x < 255 &&
+        !(ppu->status & PPUSTATUS_SPRITE_0_HIT)) {
+        ppu->status |= PPUSTATUS_SPRITE_0_HIT;
+    }
+
+    // Resolve priority to a palette RAM address rather than to a colour.
+    // One lookup then covers mirroring, the 6-bit mask, grayscale and
+    // emphasis; this used to walk two separate three-load chains and
+    // discard one of them.
+    uint8_t pal_addr;
+    if (spr_is_opaque && (bg_pixel_pattern_val == 0 || spr_is_foreground)) {
+        pal_addr = (uint8_t)(0x10u | spr_palette_idx);
+    } else if (bg_pixel_pattern_val != 0) {
+        pal_addr = (uint8_t)((bg_palette_idx << 2) | bg_pixel_pattern_val);
+    } else {
+        pal_addr = 0x00; // universal backdrop
+    }
+
+    if (ctx->ifb_row) ctx->ifb_row[x] = ppu->final_index[pal_addr];
+    if (ctx->fb_row)  ctx->fb_row[x]  = ppu->final_color[pal_addr];
+}
+
 void PPU_Step(PPU *ppu)
 {
     bool rendering_enabled = (ppu->mask & PPUMASK_SHOW_BG) || (ppu->mask & PPUMASK_SHOW_SPRITES);
 
     if (ppu->scanline == ppu->scanline_prerender) { // Pre-render line
-        bool first_prerender_cycle = (ppu->cycle == 0) || (ppu->cycle == 1 && ppu->frame_odd && rendering_enabled &&
-                                                           (ppu->mask & PPUMASK_SHOW_BG));
-        if (first_prerender_cycle) {
+        // The odd-frame tick is now dropped from the end of this scanline rather
+        // than from its start, so cycle 0 always runs and needs no special case.
+        if (ppu->cycle == 0) {
             ppu->status &= ~(PPUSTATUS_VBLANK | PPUSTATUS_SPRITE_0_HIT | PPUSTATUS_SPRITE_OVERFLOW);
             ppu->nmi_occured = false;
             ppu_update_nmi_line(ppu);
@@ -745,73 +916,9 @@ void PPU_Step(PPU *ppu)
 
     // --- Pixel Rendering (Cycles 1-256 of visible scanlines 0-(ppu->scanlines_visible - 1)) ---
     if (ppu->scanline <= (ppu->scanlines_visible - 1) && ppu->cycle >= 1 && ppu->cycle <= 256) {
-        int x = ppu->cycle - 1;
-        int y = ppu->scanline;
-
-        uint8_t bg_pixel_pattern_val = 0;
-        uint8_t bg_palette_idx       = 0;
-
-        bool bg_visible_at_pixel = (ppu->mask & PPUMASK_SHOW_BG) && (x >= 8 || (ppu->mask & PPUMASK_CLIP_BG));
-        if (bg_visible_at_pixel) {
-            uint16_t bit_selector = 0x8000 >> ppu->fine_x;
-            uint8_t  pt_bit0      = (ppu->bg_pattern_shift_low & bit_selector) ? 1 : 0;
-            uint8_t  pt_bit1      = (ppu->bg_pattern_shift_high & bit_selector) ? 1 : 0;
-            bg_pixel_pattern_val  = (pt_bit1 << 1) | pt_bit0;
-
-            uint8_t attrib_bit0 = (ppu->bg_attrib_shift_low & bit_selector) ? 1 : 0;
-            uint8_t attrib_bit1 = (ppu->bg_attrib_shift_high & bit_selector) ? 1 : 0;
-            bg_palette_idx      = (attrib_bit1 << 1) | attrib_bit0;
-        }
-
-        uint8_t final_bg_color_idx =
-            (bg_pixel_pattern_val == 0) ? ppu_palette_read(ppu, 0x3F00) : 
-                ppu_palette_read(ppu, (uint16_t)(0x3F00 + (bg_palette_idx << 2) + bg_pixel_pattern_val));
-        final_bg_color_idx &= 0x3F;
-
-        uint8_t spr_final_color_idx   = 0; 
-        bool    spr_is_opaque         = false;
-        bool    spr_is_foreground     = true;
-
-        bool sprites_visible_at_pixel = (ppu->mask & PPUMASK_SHOW_SPRITES) && (x >= 8 || (ppu->mask & PPUMASK_CLIP_SPRITES));
-        bool sprite_0_opaque_at_pixel = false;
-
-        if (sprites_visible_at_pixel && ppu->scanline_sprite_buffer[x].is_opaque) {
-            spr_is_opaque = true;
-            spr_is_foreground = ppu->scanline_sprite_buffer[x].is_foreground;
-            sprite_0_opaque_at_pixel = ppu->scanline_sprite_buffer[x].is_sprite_0;
-            
-            spr_final_color_idx = ppu_palette_read(ppu, 0x3F10 + ppu->scanline_sprite_buffer[x].palette_idx);
-            spr_final_color_idx &= 0x3F;
-        }
-
-        if (sprite_0_opaque_at_pixel && bg_pixel_pattern_val != 0 && bg_visible_at_pixel &&
-            sprites_visible_at_pixel && 
-            x < 255 &&                  
-            !(ppu->status & PPUSTATUS_SPRITE_0_HIT)) {
-            ppu->status |= PPUSTATUS_SPRITE_0_HIT;
-        }
-
-        uint8_t combined_color_idx;
-        if (spr_is_opaque) {
-            if (bg_pixel_pattern_val == 0 || spr_is_foreground) { 
-                combined_color_idx = spr_final_color_idx;
-            } else { 
-                combined_color_idx = final_bg_color_idx;
-            }
-        } else { 
-            combined_color_idx = final_bg_color_idx;
-        }
-
-        if (ppu->indexed_framebuffer) {
-            ppu->indexed_framebuffer[y * PPU_FRAMEBUFFER_WIDTH + x] = combined_color_idx;
-        }
-
-        // Apply O(1) Precalculated Color Lookup Array
-        uint32_t final_pixel_color = ppu->active_palette[combined_color_idx];
-
-        if (ppu->framebuffer) {
-            ppu->framebuffer[y * PPU_FRAMEBUFFER_WIDTH + x] = final_pixel_color;
-        }
+        PPU_PixelCtx ctx;
+        ppu_build_pixel_ctx(ppu, ppu->scanline, &ctx);
+        ppu_emit_pixel(ppu, ppu->cycle - 1, &ctx);
     }
 
     if (is_render_scanline && rendering_enabled) {
@@ -849,26 +956,26 @@ void PPU_Step(PPU *ppu)
         }
     }
 
-    bool first_vblank_cycle =
-        (ppu->cycle == 0) || (ppu->cycle == 1 && ppu->frame_odd && rendering_enabled && (ppu->mask & PPUMASK_SHOW_BG));
-    if (ppu->scanline == ppu->scanline_vblank && first_vblank_cycle) {
+    if (ppu->scanline == ppu->scanline_vblank && ppu->cycle == 0) {
         if (!ppu->suppress_vblank_start) {
             ppu->status |= PPUSTATUS_VBLANK;
             ppu->nmi_occured = true;
-            PPU_TriggerNMI(ppu); 
+            PPU_TriggerNMI(ppu);
         }
         ppu->suppress_vblank_start = false;
     }
 
+    ppu->total_cycles++;
+
+    // Dropping the odd-frame tick from the *end* of the pre-render line --
+    // rather than skipping cycle 0 on arrival -- is what lets the two checks
+    // above stay plain `cycle == 0` tests.
+    const int last_cycle = ppu_last_cycle_of_line(ppu);
+
     ppu->cycle++;
-    if (ppu->cycle > 340) {
+    if (ppu->cycle > last_cycle) {
         ppu->cycle = 0;
         ppu->scanline++;
-
-        if (ppu->scanline == ppu->scanline_prerender && ppu->frame_odd && rendering_enabled &&
-            (ppu->mask & PPUMASK_SHOW_BG)) { 
-            ppu->cycle = 1;                  
-        }
 
         if (ppu->scanline > ppu->scanline_prerender) {
             ppu->scanline  = 0;
@@ -876,6 +983,189 @@ void PPU_Step(PPU *ppu)
             ppu->frame_count++;
         }
     }
+}
+
+// Move the clock forward n ticks that provably do nothing. Only ever called
+// with an n that stays inside the idle stretch it was measured from, so the
+// scanline arithmetic never has to deal with the end-of-frame wrap or the
+// odd-frame skip.
+static inline void ppu_advance_idle(PPU *ppu, int n)
+{
+    const int cps = ppu->cycles_per_scanline;
+
+    ppu->total_cycles += (uint64_t)n;
+
+    // Almost every skip stays on the current scanline: the catch-up target is
+    // an instruction boundary, so a span is usually under ten ticks. Worth a
+    // fast path, because cycles_per_scanline is a runtime value and the
+    // general form below costs two integer divisions.
+    if (ppu->cycle + n < cps) {
+        ppu->cycle += n;
+        return;
+    }
+
+    const int pos = ppu->scanline * cps + ppu->cycle + n;
+    ppu->scanline = pos / cps;
+    ppu->cycle    = pos % cps;
+}
+
+// The next cycle at or after `cyc` on a render scanline at which PPU_Step does
+// something. Only ever asked about cyc == 0 or cyc >= 257, because cycles
+// 1-256 are the pixel pipeline and run as a span of their own.
+static inline int ppu_next_render_event(int cyc, bool rendering, bool prerender)
+{
+    if (cyc == 0) return 0;          // pre-render clears the flags here
+    if (!rendering) return INT_MAX;  // with rendering off nothing else happens
+
+    if (cyc <= 257) return 257;      // copy_horizontal_bits + evaluate_sprites
+    if (prerender) {
+        if (cyc <= 280) return 280;  // copy_vertical_bits, then every tick
+        if (cyc <= 304) return cyc;  // ...standing inside that window
+    }
+    if (cyc <= 321) return 321;      // fetch_sprite_patterns, shifting resumes
+    if (cyc <= 336) return cyc;      // inside the second shift/fetch window
+    return INT_MAX;                  // 337 to end of line: idle
+}
+
+// Runs a contiguous run of ticks under one set of hoisted invariants, or skips
+// a run that does nothing, and returns how many ticks it consumed. Always at
+// least one, so the caller's loop cannot stall.
+//
+// Every branch here either advances through PPU_Step, which is the reference
+// for one tick, or reproduces exactly what PPU_Step would have done for the
+// ticks it covers. The three shapes are:
+//
+//   * post-render and VBlank, where all 21 scanlines contain a single event;
+//   * cycles 1-256 of a render scanline, the pixel pipeline;
+//   * the rest of a render scanline, which is mostly idle between four points.
+static uint32_t ppu_run_span(PPU *ppu, uint64_t budget)
+{
+    const int cps = ppu->cycles_per_scanline;
+    const int sl  = ppu->scanline;
+    const int cyc = ppu->cycle;
+
+    const bool visible   = (sl <= ppu->scanlines_visible - 1);
+    const bool prerender = (sl == ppu->scanline_prerender);
+
+    // --- Post-render and VBlank ------------------------------------------
+    // Nothing is fetched, evaluated or drawn across these 21 scanlines. The
+    // only thing that happens is the VBlank flag and the NMI, on one tick, so
+    // the other ~7100 ticks a frame are pure arithmetic.
+    if (!visible && !prerender) {
+        int64_t to_event;
+        if (sl < ppu->scanline_vblank) {
+            to_event = (int64_t)(ppu->scanline_vblank - sl) * cps - cyc;
+        } else if (sl == ppu->scanline_vblank && cyc == 0) {
+            to_event = 0; // standing on the tick that raises VBlank
+        } else {
+            to_event = (int64_t)(ppu->scanline_prerender - sl) * cps - cyc;
+        }
+
+        if (to_event > 0) {
+            uint32_t n = (uint64_t)to_event < budget ? (uint32_t)to_event : (uint32_t)budget;
+            ppu_advance_idle(ppu, (int)n);
+            return n;
+        }
+        PPU_Step(ppu); // the VBlank tick itself
+        return 1;
+    }
+
+    const bool rendering = (ppu->mask & (PPUMASK_SHOW_BG | PPUMASK_SHOW_SPRITES)) != 0;
+
+    // --- Cycles 1-256 of a render scanline: the pixel pipeline ------------
+    if (cyc >= 1 && cyc <= 256) {
+        uint32_t n = (uint32_t)(257 - cyc);
+        if (budget < n) n = (uint32_t)budget;
+
+        // Four shapes, so that neither `visible` nor `rendering` has to be
+        // retested on any of the ticks inside the run.
+        if (!rendering && !visible) {
+            // Pre-render with rendering off fetches nothing and draws nothing,
+            // so its pixel range is as dead as the VBlank lines are.
+            ppu_advance_idle(ppu, (int)n);
+            return n;
+        }
+
+        if (!rendering) {
+            // Visible, both show bits clear: every pixel is the backdrop and
+            // no shifter or fetch runs. This is the blank screen games sit on
+            // while they load, and it comes down to one store per pixel.
+            PPU_PixelCtx ctx;
+            ppu_build_pixel_ctx(ppu, sl, &ctx);
+
+            const uint32_t colour = ppu->final_color[0];
+            const uint8_t  index  = ppu->final_index[0];
+            for (uint32_t i = 0; i < n; i++) {
+                const int x = cyc - 1 + (int)i;
+                if (ctx.ifb_row) ctx.ifb_row[x] = index;
+                if (ctx.fb_row)  ctx.fb_row[x]  = colour;
+            }
+        } else if (!visible) {
+            // Pre-render with rendering on: the background pipeline runs to
+            // prime the shifters for scanline 0, but nothing is drawn.
+            int c = cyc;
+            for (uint32_t i = 0; i < n; i++, c++) {
+                ppu->bg_pattern_shift_low <<= 1;
+                ppu->bg_pattern_shift_high <<= 1;
+                ppu->bg_attrib_shift_low <<= 1;
+                ppu->bg_attrib_shift_high <<= 1;
+
+                switch (c & 7) {
+                case 1: load_background_tile_data(ppu); break;
+                case 0: feed_background_shifters(ppu); increment_coarse_x(ppu); break;
+                }
+
+                if (c == 256) increment_fine_y(ppu);
+            }
+        } else {
+            // The common case: a visible scanline with rendering on.
+            PPU_PixelCtx ctx;
+            ppu_build_pixel_ctx(ppu, sl, &ctx);
+
+            int c = cyc;
+            for (uint32_t i = 0; i < n; i++, c++) {
+                ppu_emit_pixel(ppu, c - 1, &ctx);
+
+                ppu->bg_pattern_shift_low <<= 1;
+                ppu->bg_pattern_shift_high <<= 1;
+                ppu->bg_attrib_shift_low <<= 1;
+                ppu->bg_attrib_shift_high <<= 1;
+
+                switch (c & 7) {
+                case 1: load_background_tile_data(ppu); break;
+                case 0: feed_background_shifters(ppu); increment_coarse_x(ppu); break;
+                }
+
+                if (c == 256) increment_fine_y(ppu);
+            }
+        }
+
+        // Cycle 256 is the highest this span can reach and the line is at least
+        // 340 cycles long, so the end-of-line wrap is never in play here.
+        ppu->cycle = cyc + (int)n;
+        ppu->total_cycles += n;
+        return n;
+    }
+
+    // --- The rest of a render scanline ------------------------------------
+    {
+        int next = ppu_next_render_event(cyc, rendering, prerender);
+        const int last = ppu_last_cycle_of_line(ppu);
+
+        // The wrap has to go through PPU_Step so the scanline advance and the
+        // odd-frame skip stay in exactly one place.
+        if (next > last) next = last;
+
+        if (next > cyc) {
+            uint32_t n = (uint32_t)(next - cyc);
+            if (budget < n) n = (uint32_t)budget;
+            ppu_advance_idle(ppu, (int)n);
+            return n;
+        }
+    }
+
+    PPU_Step(ppu);
+    return 1;
 }
 
 inline uint8_t PPU_CHR_Read(PPU *ppu, uint16_t addr)

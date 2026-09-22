@@ -1,0 +1,4 @@
+# Recorded results for cpu_dummy_writes_oam
+# Regenerate with: --arg update_baseline=1
+# A test fails when an entry recorded PASS here stops passing.
+PASS	cpu_dummy_writes_oam

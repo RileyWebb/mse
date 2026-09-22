@@ -1,0 +1,11 @@
+# Recorded results for AccuracyCoin page 19
+# Regenerate with: --arg update_baseline=1
+# A test fails when an entry recorded PASS here stops passing.
+PASS	page 19/ATTRIBUTES AS TILES
+PASS	page 19/T REGISTER QUIRKS
+FAIL	page 19/STALE BG SHIFT REGISTERS
+FAIL	page 19/STALE SPRITE SHIFT REGS
+FAIL	page 19/BG SERIAL IN
+FAIL	page 19/SPRITES ON SCANLINE 0
+FAIL	page 19/$2004 STRESS TEST
+FAIL	page 19/$2007 STRESS TEST

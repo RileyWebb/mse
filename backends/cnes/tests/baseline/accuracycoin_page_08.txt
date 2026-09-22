@@ -1,0 +1,10 @@
+# Recorded results for AccuracyCoin page 8
+# Regenerate with: --arg update_baseline=1
+# A test fails when an entry recorded PASS here stops passing.
+PASS	page 08/$C3   DCP INDIRECT,X
+PASS	page 08/$C7   DCP ZEROPAGE
+PASS	page 08/$CF   DCP ABSOLUTE
+PASS	page 08/$D3   DCP INDIRECT,Y
+PASS	page 08/$D7   DCP ZEROPAGE,X
+PASS	page 08/$DB   DCP ABSOLUTE,Y
+PASS	page 08/$DF   DCP ABSOLUTE,X

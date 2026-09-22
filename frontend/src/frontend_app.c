@@ -6,20 +6,34 @@
 #include <string.h>
 
 #include "libmse/libmse.h"
-#include "libmse/libmse_gfx_internal.h"
 #include "libmse/libmse_debug.h"
+#include "libmse/libmse_profiler.h"
+#include "frontend_profiler.h"
+#include "frontend_screenshot.h"
 #include "frontend_cimgui.h"
 #include "frontend_imgui.h"
 #include "frontend_theme.h"
 #include "frontend_ui.h"
+#include "frontend_lua_ui.h"
 #include "frontend_input.h"
 
 typedef struct mse_frontend_backend_preview_s {
-    mse_backend_t *backend;
+    libmse_backend_t *backend;
     SDL_Thread *thread;
     mse_event_t *stop_event;
     SDL_GPUTextureSamplerBinding texture_binding;
     SDL_Window *window;
+
+    // --- Backend video ---
+    // Backends hand us finished frames as CPU pixels; they have no business
+    // knowing about SDL_GPU, so the upload happens here.
+    SDL_GPUTexture *frame_texture;
+    SDL_GPUSampler *frame_sampler;
+    SDL_GPUTransferBuffer *frame_transfer;
+    uint32_t frame_width;
+    uint32_t frame_height;
+    bool frame_swizzle;        // Host lacks BGRA8, so convert while copying
+    bool frame_upload_pending; // Staged this tick, still to be copied on the GPU
     
     // --- DIRECT DRAW MODIFICATION ---
     // Track the reserved screen-space coordinates for the direct SDL_GPU draw pass
@@ -159,62 +173,6 @@ static uint8_t* load_shader_file_from_disk(const char *filepath, size_t *out_siz
     return buffer;
 }
 
-typedef struct {
-    mse_gfx_shader_t *vert_shader;
-    mse_gfx_shader_t *frag_shader;
-    mse_gfx_pipeline_t *pipeline;
-} RenderPipelineContext;
-
-RenderPipelineContext setup_graphics_pipeline_from_disk(const char *base_shader_dir, mse_gfx_texture_format_t target_format) {
-    RenderPipelineContext ctx = {0};
-    char vert_path[512];
-    char frag_path[512];
-
-    // Construct full paths matching your CMake output layout
-    snprintf(vert_path, sizeof(vert_path), "%s/passthrough.vert.spv", base_shader_dir);
-    snprintf(frag_path, sizeof(frag_path), "%s/passthrough.frag.spv", base_shader_dir);
-
-    size_t vert_size = 0;
-    size_t frag_size = 0;
-
-    // 1. Read binary files from disk
-    uint8_t *vert_code = load_shader_file_from_disk(vert_path, &vert_size);
-    uint8_t *frag_code = load_shader_file_from_disk(frag_path, &frag_size);
-
-    if (!vert_code || !frag_code) {
-        if (vert_code) free(vert_code);
-        if (frag_code) free(frag_code);
-        return ctx;
-    }
-
-    // 2. Feed the loaded standard buffers into your existing driver layout
-    ctx.vert_shader = mse_gfx_create_shader(vert_code, vert_size, true);
-    ctx.frag_shader = mse_gfx_create_shader(frag_code, frag_size, false);
-
-    // Free buffers now that the graphics driver has instantiated the modules
-    free(vert_code);
-    free(frag_code);
-
-    if (!ctx.vert_shader || !ctx.frag_shader) {
-        if (ctx.vert_shader) mse_gfx_destroy_shader(ctx.vert_shader);
-        if (ctx.frag_shader) mse_gfx_destroy_shader(ctx.frag_shader);
-        memset(&ctx, 0, sizeof(ctx));
-        return ctx;
-    }
-
-    // 3. Complete pipeline creation
-    ctx.pipeline = mse_gfx_create_pipeline(ctx.vert_shader, ctx.frag_shader, target_format);
-
-    if (!ctx.pipeline) {
-        fprintf(stderr, "Gfx Error: Failed to compile pipeline from disk shaders.\n");
-        mse_gfx_destroy_shader(ctx.vert_shader);
-        mse_gfx_destroy_shader(ctx.frag_shader);
-        memset(&ctx, 0, sizeof(ctx));
-    }
-
-    return ctx;
-}
-
 static void mse_frontend_set_window_fullscreen(SDL_Window *window, bool fullscreen) {
     if (window != NULL) {
         SDL_SetWindowFullscreen(window, fullscreen);
@@ -229,7 +187,211 @@ static ImTextureRef_c mse_frontend_make_texture_ref(const SDL_GPUTextureSamplerB
     return texture_ref;
 }
 
-static void mse_frontend_backend_preview_shutdown(mse_frontend_backend_preview_t *preview) {
+static void mse_frontend_backend_preview_release_video(mse_frontend_backend_preview_t *preview,
+                                                       SDL_GPUDevice *device) {
+    if (preview == NULL || device == NULL) {
+        return;
+    }
+
+    if (preview->frame_transfer != NULL) {
+        SDL_ReleaseGPUTransferBuffer(device, preview->frame_transfer);
+        preview->frame_transfer = NULL;
+    }
+    if (preview->frame_texture != NULL) {
+        SDL_ReleaseGPUTexture(device, preview->frame_texture);
+        preview->frame_texture = NULL;
+    }
+    if (preview->frame_sampler != NULL) {
+        SDL_ReleaseGPUSampler(device, preview->frame_sampler);
+        preview->frame_sampler = NULL;
+    }
+
+    preview->frame_width = 0;
+    preview->frame_height = 0;
+    preview->frame_upload_pending = false;
+    preview->texture_binding.texture = NULL;
+    preview->texture_binding.sampler = NULL;
+}
+
+// (Re)creates the texture, sampler and staging buffer for a frame of the given
+// size and format. Cheap to call every tick: it returns immediately unless the
+// geometry actually changed.
+static bool mse_frontend_backend_preview_ensure_video(mse_frontend_backend_preview_t *preview,
+                                                      SDL_GPUDevice *device,
+                                                      uint32_t width,
+                                                      uint32_t height,
+                                                      mse_frame_format_t format) {
+    if (preview == NULL || device == NULL || width == 0 || height == 0) {
+        return false;
+    }
+
+    if (preview->frame_texture != NULL && preview->frame_width == width && preview->frame_height == height) {
+        return true;
+    }
+
+    mse_frontend_backend_preview_release_video(preview, device);
+
+    // BGRA8 is what palette-based cores produce for free on a little-endian
+    // host. It is almost always available, but fall back to RGBA8 plus a
+    // per-pixel swap rather than refusing to display anything.
+    SDL_GPUTextureFormat gpu_format = (format == MSE_FRAME_FORMAT_BGRA8)
+                                          ? SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM
+                                          : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+
+    preview->frame_swizzle = false;
+    if (!SDL_GPUTextureSupportsFormat(device, gpu_format, SDL_GPU_TEXTURETYPE_2D,
+                                      SDL_GPU_TEXTUREUSAGE_SAMPLER)) {
+        DEBUG_WARN("GPU does not support the frame format this backend publishes; converting per pixel.");
+        gpu_format = (gpu_format == SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM)
+                         ? SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM
+                         : SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
+        preview->frame_swizzle = true;
+    }
+
+    SDL_GPUTextureCreateInfo texture_info;
+    SDL_zero(texture_info);
+    texture_info.type = SDL_GPU_TEXTURETYPE_2D;
+    texture_info.format = gpu_format;
+    texture_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    texture_info.width = width;
+    texture_info.height = height;
+    texture_info.layer_count_or_depth = 1;
+    texture_info.num_levels = 1;
+    texture_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+
+    preview->frame_texture = SDL_CreateGPUTexture(device, &texture_info);
+    if (preview->frame_texture == NULL) {
+        DEBUG_ERROR("Failed to create backend frame texture: %s", SDL_GetError());
+        return false;
+    }
+
+    // Nearest: a 256x240 image scaled up to the window should stay crisp.
+    SDL_GPUSamplerCreateInfo sampler_info;
+    SDL_zero(sampler_info);
+    sampler_info.min_filter = SDL_GPU_FILTER_NEAREST;
+    sampler_info.mag_filter = SDL_GPU_FILTER_NEAREST;
+    sampler_info.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+    sampler_info.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    sampler_info.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    sampler_info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+
+    preview->frame_sampler = SDL_CreateGPUSampler(device, &sampler_info);
+    if (preview->frame_sampler == NULL) {
+        DEBUG_ERROR("Failed to create backend frame sampler: %s", SDL_GetError());
+        mse_frontend_backend_preview_release_video(preview, device);
+        return false;
+    }
+
+    SDL_GPUTransferBufferCreateInfo transfer_info;
+    SDL_zero(transfer_info);
+    transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    transfer_info.size = width * height * 4u;
+
+    preview->frame_transfer = SDL_CreateGPUTransferBuffer(device, &transfer_info);
+    if (preview->frame_transfer == NULL) {
+        DEBUG_ERROR("Failed to create backend frame transfer buffer: %s", SDL_GetError());
+        mse_frontend_backend_preview_release_video(preview, device);
+        return false;
+    }
+
+    preview->frame_width = width;
+    preview->frame_height = height;
+    preview->texture_binding.texture = preview->frame_texture;
+    preview->texture_binding.sampler = preview->frame_sampler;
+
+    DEBUG_INFO("Backend video: %ux%u %s", width, height,
+               preview->frame_swizzle ? "(converted)" : "(native)");
+    return true;
+}
+
+// Pulls the newest frame from the backend and stages it. Runs before the UI is
+// built so the image is in place for this tick; the GPU copy itself is issued
+// later, once there is a command buffer.
+static void mse_frontend_backend_preview_pull_frame(mse_frontend_backend_preview_t *preview,
+                                                    SDL_GPUDevice *device) {
+    if (preview == NULL || device == NULL || preview->backend == NULL) {
+        return;
+    }
+
+    mse_frame_t frame;
+    SDL_zero(frame);
+    if (!mse_backend_get_frame(preview->backend, &frame)) {
+        return; // Backend publishes no video, or has not produced a frame yet
+    }
+
+    if (!mse_frontend_backend_preview_ensure_video(preview, device, frame.width, frame.height, frame.format)) {
+        return;
+    }
+
+    // Nothing new since last tick: keep displaying what is already uploaded.
+    if (!frame.ready || frame.pixels == NULL) {
+        return;
+    }
+
+    uint8_t *staging = (uint8_t *)SDL_MapGPUTransferBuffer(device, preview->frame_transfer, true);
+    if (staging == NULL) {
+        DEBUG_ERROR("Failed to map backend frame transfer buffer: %s", SDL_GetError());
+        return;
+    }
+
+    const uint32_t row_bytes = frame.width * 4u;
+    const uint32_t src_pitch = frame.pitch ? frame.pitch : row_bytes;
+
+    for (uint32_t y = 0; y < frame.height; ++y) {
+        const uint8_t *src = frame.pixels + (size_t)y * src_pitch;
+        uint8_t *dst = staging + (size_t)y * row_bytes;
+
+        if (!preview->frame_swizzle) {
+            memcpy(dst, src, row_bytes);
+        } else {
+            for (uint32_t x = 0; x < frame.width; ++x) {
+                dst[x * 4 + 0] = src[x * 4 + 2];
+                dst[x * 4 + 1] = src[x * 4 + 1];
+                dst[x * 4 + 2] = src[x * 4 + 0];
+                dst[x * 4 + 3] = src[x * 4 + 3];
+            }
+        }
+    }
+
+    SDL_UnmapGPUTransferBuffer(device, preview->frame_transfer);
+    preview->frame_upload_pending = true;
+}
+
+// Issues the staged copy. Must run on the same command buffer as, and before,
+// the render pass that samples the texture.
+static void mse_frontend_backend_preview_upload_frame(mse_frontend_backend_preview_t *preview,
+                                                      SDL_GPUCommandBuffer *command_buffer) {
+    if (preview == NULL || command_buffer == NULL || !preview->frame_upload_pending) {
+        return;
+    }
+
+    preview->frame_upload_pending = false;
+
+    SDL_GPUCopyPass *copy_pass = SDL_BeginGPUCopyPass(command_buffer);
+    if (copy_pass == NULL) {
+        return;
+    }
+
+    SDL_GPUTextureTransferInfo source;
+    SDL_zero(source);
+    source.transfer_buffer = preview->frame_transfer;
+    source.offset = 0;
+    source.pixels_per_row = preview->frame_width;
+    source.rows_per_layer = preview->frame_height;
+
+    SDL_GPUTextureRegion destination;
+    SDL_zero(destination);
+    destination.texture = preview->frame_texture;
+    destination.w = preview->frame_width;
+    destination.h = preview->frame_height;
+    destination.d = 1;
+
+    SDL_UploadToGPUTexture(copy_pass, &source, &destination, true);
+    SDL_EndGPUCopyPass(copy_pass);
+}
+
+static void mse_frontend_backend_preview_shutdown(mse_frontend_backend_preview_t *preview,
+                                                  SDL_GPUDevice *device) {
     if (preview == NULL) {
         return;
     }
@@ -247,6 +409,10 @@ static void mse_frontend_backend_preview_shutdown(mse_frontend_backend_preview_t
         preview->stop_event = NULL;
     }
 
+    // After the emulation thread is joined, so nothing can be publishing into
+    // the buffers we are about to drop.
+    mse_frontend_backend_preview_release_video(preview, device);
+
     preview->backend = NULL;
     preview->texture_binding.texture = NULL;
     preview->texture_binding.sampler = NULL;
@@ -260,14 +426,14 @@ static int mse_frontend_backend_thread_func(void *data) {
     return 0;
 }
 
-static bool mse_frontend_backend_preview_init(mse_frontend_backend_preview_t *preview, mse_backend_t *backend) {
+static bool mse_frontend_backend_preview_init(mse_frontend_backend_preview_t *preview, libmse_backend_t *backend) {
     if (preview == NULL) {
         return false;
     }
 
     memset(preview, 0, sizeof(*preview));
     preview->backend = backend;
-    if (backend != NULL && (backend->capabilities & MSE_BACKEND_CAPS_THREADED)) {
+    if (backend != NULL) {
         preview->stop_event = mse_event_create();
     }
     return true;
@@ -296,8 +462,8 @@ static void mse_frontend_backend_preview_contents(const mse_frontend_backend_pre
     (void)ui_scale;
 
     if (preview->texture_binding.texture != NULL) {
-        uint32_t tex_w = 256;
-        uint32_t tex_h = 240;
+        uint32_t tex_w = preview->frame_width  ? preview->frame_width  : MSE_BACKEND_PREVIEW_WIDTH;
+        uint32_t tex_h = preview->frame_height ? preview->frame_height : MSE_BACKEND_PREVIEW_HEIGHT;
 
         const ImVec2 avail = igGetContentRegionAvail();
         const float aspect_ratio = tex_h > 0 ? ((float)tex_w / (float)tex_h) : 1.0f;
@@ -331,6 +497,12 @@ static void mse_frontend_backend_preview_contents(const mse_frontend_backend_pre
                 cursor_screen_pos, image_max, (ImVec2){0.0f, 0.0f}, (ImVec2){1.0f, 1.0f}, 0xFFFFFFFF);
 
         ImDrawList_AddCallback(draw_list, igGetPlatformIO_Nil()->DrawCallback_SetSamplerLinear, NULL, 0);
+
+        // After the image, so it draws on top of it, and against the image's
+        // own bounds rather than the window's -- the picture is letterboxed
+        // inside the window, and a counter in the black bar reads as a bug.
+        mse_frontend_profiler_draw_framecounter(cursor_screen_pos.x, cursor_screen_pos.y,
+                                                image_size.x, image_size.y);
     } else {
         igTextDisabled("No backend frame available.");
     }
@@ -346,7 +518,7 @@ static void mse_frontend_backend_emulation_draw(mse_frontend_backend_preview_t *
         if (viewport != NULL) {
             igSetNextWindowPos(viewport->WorkPos, ImGuiCond_Always, (ImVec2){0.0f, 0.0f});
             igSetNextWindowSize(viewport->WorkSize, ImGuiCond_Always);
-            igSetNextWindowViewport(viewport->ID);
+            igSetWindowViewport(igGetCurrentWindow(), (ImGuiViewportP*)viewport);
         }
 
         flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
@@ -442,21 +614,7 @@ static bool mse_frontend_set_swapchain_present_mode(SDL_GPUDevice *device, SDL_W
     return true;
 }
 
-FILE *mse_register_log_file() 
-{
-    FILE *f_log = NULL; // TODO: Add timestamp-based log file naming and rotation and change log location to something like %APPDATA%/mse/logs on Windows and ~/.local/share/mse/logs on Linux
-
-	if (!f_log) {
-		f_log = fopen("log.txt", "w");
-	}
-
-	return f_log;
-}
-
 int mse_frontend_run(const mse_frontend_app_config_t *config) {
-    FILE *log_file = mse_register_log_file();
-    libmse_debug_register_buffer(log_file);
-
     const char *config_file = "config.cfg";
     if (!libmse_cmd_execute("exec", 1, &config_file)) {
         DEBUG_ERROR("Failed to parse config.cfg");
@@ -493,7 +651,7 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
     g_app_ctx.is_running = true;
     g_app_ctx.swapchain_composition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
 
-    mse_gfx_init(device);
+    //mse_gfx_init(device);
 
     mse_frontend_ui_cache_sdl_settings(window);
     mse_frontend_terminal_init();
@@ -541,17 +699,24 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
         return 1;
     }
 
-    mse_backend_t *cnes_backend = mse_backend_register_folder("cnes");
+    libmse_backend_t *cnes_backend = mse_backend_register_folder("cnes");
 
     /* Initialise the cNES backend lifecycle */
     if (cnes_backend != NULL) {
         mse_backend_init(cnes_backend);
     }
 
+    /* Debug UI the backend defines for itself. Loaded after init so its scripts
+     * can talk to a live emulator, and before the first frame so the panels are
+     * in the View menu from the start. */
+    if (mse_frontend_lua_ui_init()) {
+        mse_frontend_lua_ui_load_backend(cnes_backend);
+    }
+
     mse_frontend_backend_preview_t backend_preview;
     if (!mse_frontend_backend_preview_init(&backend_preview, cnes_backend)) {
         memset(&backend_preview, 0, sizeof(backend_preview));
-    } else if (cnes_backend != NULL && (cnes_backend->capabilities & MSE_BACKEND_CAPS_THREADED)) {
+    } else if (cnes_backend != NULL) {
         backend_preview.thread = SDL_CreateThread(mse_frontend_backend_thread_func, "BackendThread", &backend_preview);
     }
 
@@ -560,7 +725,7 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
     mse_frontend_input_thread_start(input_manager);
 
     /* Build the backends list for the UI (pointer array, owned by libmse) */
-    static mse_backend_t *g_backend_list[1];
+    static libmse_backend_t *g_backend_list[1];
     size_t backend_count = 0;
     if (cnes_backend != NULL) {
         g_backend_list[backend_count++] = cnes_backend;
@@ -583,6 +748,11 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
     ui_state.backends       = g_backend_list;
     ui_state.backend_count  = backend_count;
     ui_state.selected_core_index = backend_count > 0 ? 0 : -1;
+
+    libmse_profiler_thread_name(MSE_FRONTEND_PROFILER_THREAD_NAME);
+    mse_frontend_profiler_init();
+    mse_frontend_screenshot_init();
+
     DEBUG_INFO("Frontend initialized");
 
     g_app_ctx.is_running = true;
@@ -594,6 +764,7 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
         }
         last_frame_ticks = now_ticks;
 
+        LIBMSE_PROFILE_START("events");
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             mse_frontend_imgui_process_event(&event);
@@ -621,6 +792,14 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
                 continue;
             }
 
+            // On a key as well as in the menu: the menu bar only exists in the
+            // menu view, and a frame worth profiling is usually one being
+            // spent emulating.
+            if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_F9) {
+                ui_state.show_profiler = !ui_state.show_profiler;
+                continue;
+            }
+
             if (event.type == SDL_EVENT_QUIT) {
                 g_app_ctx.is_running = false;
             } else if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event.window.windowID == SDL_GetWindowID(window)) {
@@ -631,6 +810,7 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
                 mse_frontend_input_on_gamepad_removed(input_manager, (int)event.gdevice.which);
             }
         }
+        LIBMSE_PROFILE_END();
 
         if (ui_state.core_view_requested) {
             ui_state.core_view_requested = false;
@@ -654,24 +834,47 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
             }
         }
 
-        mse_backend_t *active_backend = mse_frontend_input_manager_get_backend(input_manager);
+        libmse_backend_t *active_backend = mse_frontend_input_manager_get_backend(input_manager);
         backend_preview.backend = active_backend;
+        mse_frontend_screenshot_set_backend(active_backend);
         if (active_backend != NULL) {
+            LIBMSE_PROFILE_START("backend inputs");
             if (active_backend->update_inputs != NULL && active_backend->input_states != NULL) {
                 mse_backend_update_inputs(active_backend, active_backend->input_states);
             }
-            if (active_backend->get_texture != NULL) {
-                backend_preview.texture_binding = mse_gfx_get_texture_sampler_binding(active_backend->get_texture());
-            }
+            LIBMSE_PROFILE_END();
+
+            LIBMSE_PROFILE_START("pull frame");
+            mse_frontend_backend_preview_pull_frame(&backend_preview, device);
+            LIBMSE_PROFILE_END();
         }
-        
+
+        LIBMSE_PROFILE_START("ui");
         mse_frontend_theme_apply(ui_state.theme);
+
+        LIBMSE_PROFILE_START("imgui begin");
         mse_frontend_imgui_begin_frame();
+        LIBMSE_PROFILE_END();
+
+        // One snapshot per thread for this frame, shared by the profiler window
+        // and the frame counter.
+        mse_frontend_profiler_new_frame();
+
         if (view_mode == MSE_FRONTEND_VIEW_MENU || view_mode == MSE_FRONTEND_VIEW_TRANSITION_TO_MENU) {
+            LIBMSE_PROFILE_START("menus and panels");
             mse_frontend_ui_draw(&ui_state);
+            LIBMSE_PROFILE_END();
         }
-        
+
+        LIBMSE_PROFILE_START("emulation view");
         mse_frontend_backend_emulation_draw(&backend_preview, content_scale, view_mode != MSE_FRONTEND_VIEW_MENU);
+        LIBMSE_PROFILE_END();
+
+        // Last, and inside "ui", so the window is honest about what drawing it
+        // costs rather than quietly leaving itself out of the total.
+        LIBMSE_PROFILE_START("profiler window");
+        mse_frontend_profiler_draw(&ui_state.show_profiler);
+        LIBMSE_PROFILE_END();
 
         if (view_mode == MSE_FRONTEND_VIEW_TRANSITION_TO_CORE || view_mode == MSE_FRONTEND_VIEW_TRANSITION_TO_MENU) {
             ImDrawList *overlay = igGetForegroundDrawList_ViewportPtr(igGetMainViewport());
@@ -690,18 +893,38 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
                                          0);
             }
         }
+        LIBMSE_PROFILE_END(); // "ui"
+
+        LIBMSE_PROFILE_START("imgui render");
         igRender();
+        LIBMSE_PROFILE_END();
+
+        LIBMSE_PROFILE_START("gpu");
 
         SDL_GPUCommandBuffer *command_buffer = SDL_AcquireGPUCommandBuffer(device);
         if (command_buffer == NULL) {
             DEBUG_ERROR("Failed to acquire GPU command buffer: %s", SDL_GetError());
+            // "gpu" has to be closed by hand on the way out; the frame boundary
+            // would forgive it, but at the cost of an unbalanced-zone warning
+            // every time the GPU is busy.
+            LIBMSE_PROFILE_END();
+            libmse_profiler_frame();
             continue;
         }
 
+        // Before the render pass, so the texture the UI samples holds this frame.
+        LIBMSE_PROFILE_START("upload frame");
+        mse_frontend_backend_preview_upload_frame(&backend_preview, command_buffer);
+        LIBMSE_PROFILE_END();
+
+        LIBMSE_PROFILE_START("prepare draw data");
         mse_frontend_imgui_prepare_draw_data(command_buffer);
+        LIBMSE_PROFILE_END();
 
         SDL_GPUTexture *swapchain_texture = NULL;
+        LIBMSE_PROFILE_START("acquire swapchain");
         SDL_AcquireGPUSwapchainTexture(command_buffer, window, &swapchain_texture, NULL, NULL);
+        LIBMSE_PROFILE_END();
 
         if (swapchain_texture != NULL) {
             SDL_GPUColorTargetInfo color_target_info;
@@ -722,20 +945,31 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
             color_target_info.padding1 = 0;
             color_target_info.padding2 = 0;
 
+            LIBMSE_PROFILE_START("render pass");
             SDL_GPURenderPass *render_pass = SDL_BeginGPURenderPass(command_buffer, &color_target_info, 1, NULL);
             if (render_pass != NULL) {
                 mse_frontend_imgui_render_draw_data(command_buffer, render_pass);
-               
+
                 SDL_EndGPURenderPass(render_pass);
             }
+            LIBMSE_PROFILE_END();
         }
 
+        // Where waiting for the GPU and for vsync tends to land, so it is
+        // usually the largest row and the one worth reading first.
+        LIBMSE_PROFILE_START("submit");
         SDL_SubmitGPUCommandBuffer(command_buffer);
+        LIBMSE_PROFILE_END();
 
         if (render_viewports) {
+            LIBMSE_PROFILE_START("viewports");
             igUpdatePlatformWindows();
             igRenderPlatformWindowsDefault(NULL, NULL);
+            LIBMSE_PROFILE_END();
         }
+
+        LIBMSE_PROFILE_END(); // "gpu"
+        libmse_profiler_frame();
     }
 
     SDL_WaitForGPUIdle(device);
@@ -745,7 +979,7 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
 
     mse_frontend_input_manager_destroy(input_manager);
     
-    mse_frontend_backend_preview_shutdown(&backend_preview);
+    mse_frontend_backend_preview_shutdown(&backend_preview, device);
     if (cnes_backend != NULL)
         mse_backend_shutdown(cnes_backend);
 
@@ -755,10 +989,7 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
     SDL_DestroyWindow(window);
     SDL_Quit();
 
-    if (log_file) {
-        libmse_debug_flush_all();
-        fclose(log_file);
-    }
+    libmse_log_flush_all();
 
     return 0;
 }

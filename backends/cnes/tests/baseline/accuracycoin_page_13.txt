@@ -1,0 +1,13 @@
+# Recorded results for AccuracyCoin page 13
+# Regenerate with: --arg update_baseline=1
+# A test fails when an entry recorded PASS here stops passing.
+FAIL	page 13/DMA + OPEN BUS
+FAIL	page 13/DMA + $2002 READ
+FAIL	page 13/DMA + $2007 READ
+FAIL	page 13/DMA + $2007 WRITE
+FAIL	page 13/DMA + $4015 READ
+FAIL	page 13/DMA + $4016 READ
+FAIL	page 13/DMC DMA BUS CONFLICTS
+FAIL	page 13/DMC DMA + OAM DMA
+SKIP	page 13/EXPLICIT DMA ABORT
+SKIP	page 13/IMPLICIT DMA ABORT

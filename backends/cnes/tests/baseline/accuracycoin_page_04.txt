@@ -1,0 +1,10 @@
+# Recorded results for AccuracyCoin page 4
+# Regenerate with: --arg update_baseline=1
+# A test fails when an entry recorded PASS here stops passing.
+PASS	page 04/$23   RLA INDIRECT,X
+PASS	page 04/$27   RLA ZEROPAGE
+PASS	page 04/$2F   RLA ABSOLUTE
+PASS	page 04/$33   RLA INDIRECT,Y
+PASS	page 04/$37   RLA ZEROPAGE,X
+PASS	page 04/$3B   RLA ABSOLUTE,Y
+PASS	page 04/$3F   RLA ABSOLUTE,X

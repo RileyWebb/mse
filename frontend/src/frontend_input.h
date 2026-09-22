@@ -29,7 +29,7 @@ void                          mse_frontend_input_manager_destroy(mse_frontend_in
 /* Attach the active backend.  Clears all current bindings and loads
  * defaults based on backend->input_descs. Pass NULL to detach. */
 void mse_frontend_input_manager_set_backend(mse_frontend_input_manager_t *mgr,
-                                             mse_backend_t               *backend);
+                                             libmse_backend_t               *backend);
 
 /* Thread lifecycle ------------------------------------------------------ */
 bool mse_frontend_input_thread_start(mse_frontend_input_manager_t *mgr);
@@ -67,6 +67,6 @@ const char *mse_frontend_input_binding_label(const mse_input_binding_t *binding,
                                               char *buf, size_t buf_size);
 
 /* Accessor --------------------------------------------------------------- */
-mse_backend_t *mse_frontend_input_manager_get_backend(mse_frontend_input_manager_t *mgr);
+libmse_backend_t *mse_frontend_input_manager_get_backend(mse_frontend_input_manager_t *mgr);
 
 #endif // MSE_FRONTEND_INPUT_H

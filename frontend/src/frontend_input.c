@@ -17,7 +17,7 @@
 
 typedef struct mse_frontend_input_manager_s {
     /* Backend we are feeding */
-    mse_backend_t *backend;
+    libmse_backend_t *backend;
 
     /* Per-input bindings (parallel to backend->input_descs) */
     mse_input_binding_t bindings[MSE_INPUT_MAX_INPUTS];
@@ -113,7 +113,7 @@ static int mse_frontend_input_thread(void *user_data)
 
         SDL_LockMutex(mgr->mutex);
 
-        mse_backend_t *backend = mgr->backend;
+        libmse_backend_t *backend = mgr->backend;
 
         if (backend != NULL && backend->input_states != NULL &&
             backend->input_descs != NULL && backend->input_count > 0U) {
@@ -276,7 +276,7 @@ void mse_frontend_input_manager_destroy(mse_frontend_input_manager_t *mgr)
 }
 
 void mse_frontend_input_manager_set_backend(mse_frontend_input_manager_t *mgr,
-                                             mse_backend_t               *backend)
+                                             libmse_backend_t               *backend)
 {
     if (mgr == NULL) {
         return;
@@ -479,7 +479,7 @@ const char *mse_frontend_input_binding_label(const mse_input_binding_t *binding,
     return buf;
 }
 
-mse_backend_t *mse_frontend_input_manager_get_backend(mse_frontend_input_manager_t *mgr)
+libmse_backend_t *mse_frontend_input_manager_get_backend(mse_frontend_input_manager_t *mgr)
 {
     if (mgr == NULL) {
         return NULL;

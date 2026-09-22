@@ -1,0 +1,17 @@
+# Recorded results for nestest menu (normal page)
+# Regenerate with: --arg update_baseline=1
+# A test fails when an entry recorded PASS here stops passing.
+PASS	normal/Run all tests
+PASS	normal/Branch tests
+PASS	normal/Flag tests
+PASS	normal/Immediate tests
+PASS	normal/Implied tests
+PASS	normal/Stack tests
+PASS	normal/Accumulator tests
+PASS	normal/(Indirect,X) tests
+PASS	normal/Zeropage tests
+PASS	normal/Absolute tests
+PASS	normal/(Indirect),Y tests
+PASS	normal/Absolute,Y tests
+PASS	normal/Zeropage,X tests
+PASS	normal/Absolute,X tests

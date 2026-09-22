@@ -1,0 +1,4 @@
+# Recorded results for instr_12-jmp_jsr
+# Regenerate with: --arg update_baseline=1
+# A test fails when an entry recorded PASS here stops passing.
+PASS	instr_12-jmp_jsr

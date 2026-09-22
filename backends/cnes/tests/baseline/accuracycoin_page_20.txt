@@ -1,0 +1,7 @@
+# Recorded results for AccuracyCoin page 20
+# Regenerate with: --arg update_baseline=1
+# A test fails when an entry recorded PASS here stops passing.
+FAIL	page 20/INSTRUCTION TIMING
+FAIL	page 20/IMPLIED DUMMY READS
+FAIL	page 20/BRANCH DUMMY READS
+FAIL	page 20/JSR EDGE CASES

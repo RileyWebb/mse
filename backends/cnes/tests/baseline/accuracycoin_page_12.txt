@@ -1,0 +1,6 @@
+# Recorded results for AccuracyCoin page 12
+# Regenerate with: --arg update_baseline=1
+# A test fails when an entry recorded PASS here stops passing.
+FAIL	page 12/INTERRUPT FLAG LATENCY
+FAIL	page 12/NMI OVERLAP BRK
+FAIL	page 12/NMI OVERLAP IRQ

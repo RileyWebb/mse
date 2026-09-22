@@ -1,0 +1,11 @@
+# Recorded results for AccuracyCoin page 11
+# Regenerate with: --arg update_baseline=1
+# A test fails when an entry recorded PASS here stops passing.
+PASS	page 11/$0B   ANC IMMEDIATE
+PASS	page 11/$2B   ANC IMMEDIATE
+PASS	page 11/$4B   ASR IMMEDIATE
+PASS	page 11/$6B   ARR IMMEDIATE
+PASS	page 11/$8B   ANE IMMEDIATE
+PASS	page 11/$AB   LXA IMMEDIATE
+PASS	page 11/$CB   AXS IMMEDIATE
+PASS	page 11/$EB   SBC IMMEDIATE

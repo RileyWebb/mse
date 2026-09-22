@@ -1,0 +1,14 @@
+# Recorded results for nestest menu (invalid page)
+# Regenerate with: --arg update_baseline=1
+# A test fails when an entry recorded PASS here stops passing.
+PASS	invalid/Run all tests
+PASS	invalid/NOP tests
+PASS	invalid/LAX tests
+PASS	invalid/SAX tests
+PASS	invalid/SBC test (opcode 0EBh)
+PASS	invalid/DCP tests
+PASS	invalid/ISB tests
+PASS	invalid/SLO tests
+PASS	invalid/RLA tests
+PASS	invalid/SRE tests
+PASS	invalid/RRA tests

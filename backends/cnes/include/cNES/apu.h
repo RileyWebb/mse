@@ -1,13 +1,16 @@
 #ifndef APU_H
 #define APU_H
 
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
 typedef struct NES NES;
 
+// Must stay a power of two: the ring indices wrap with a mask.
 #define APU_SAMPLE_BUFFER_CAPACITY 8192
+#define APU_SAMPLE_BUFFER_MASK (APU_SAMPLE_BUFFER_CAPACITY - 1u)
 
 typedef struct APU_PulseChannel {
     bool enabled;
@@ -92,10 +95,15 @@ typedef struct APU {
 
     double cycles_per_sample;
     double sample_cycle_accumulator;
+
+    // Single-producer / single-consumer ring: the emulation thread writes, the
+    // audio thread reads. Each index has exactly one writer, which is what makes
+    // it safe without a lock. The old design had a shared `count` and let the
+    // producer advance the read index on overflow, so both threads wrote both
+    // fields -- a plain data race that corrupted the buffer under load.
     float sample_buffer[APU_SAMPLE_BUFFER_CAPACITY];
-    size_t sample_buffer_read_index;
-    size_t sample_buffer_write_index;
-    size_t sample_buffer_count;
+    _Atomic size_t sample_buffer_read_index;  // owned by the consumer
+    _Atomic size_t sample_buffer_write_index; // owned by the producer
 
     APU_PulseChannel pulse[2];
     APU_TriangleChannel triangle;

@@ -6,7 +6,6 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin)
 
 enable_testing()
 
-add_subdirectory(ext)
 #add_subdirectory(examples/test_backend)
 add_subdirectory(backends/cnes)
 
@@ -66,3 +65,8 @@ add_dependencies(mse copy_info copy_data)
 #else()
 #    message(WARNING "glslc not found! Shaders will not be compiled.")
 #endif()
+option(CNES_BUILD_TESTS "Build the cNES accuracy test suite" ON)
+if(CNES_BUILD_TESTS)
+    # Added from the root so the LuaJIT variables that libmse exports are set.
+    add_subdirectory(backends/cnes/tests)
+endif()

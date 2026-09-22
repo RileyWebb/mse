@@ -1,8 +1,13 @@
 cmake_minimum_required(VERSION 4.1)
-project(mse C)
+project(mse C CXX)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+include(cmake/SDL.cmake)
+include(cmake/cimgui.cmake)
 
 set(MSE_FRONTEND_SOURCES
     src/main.c
@@ -10,13 +15,18 @@ set(MSE_FRONTEND_SOURCES
     src/frontend_imgui.c
     src/frontend_theme.c
     src/frontend_help.c
-    src/frontend_logs.c
     src/frontend_ui.c
     src/frontend_terminal.c
     src/frontend_settings.c
     src/frontend_input.c
     src/cimgui_markdown.c
+    src/frontend_lua.c
+    src/frontend_lua_ui.c
+    src/frontend_file_dialog.c
     #src/cimgui_hex.c
+    src/frontend_library.c
+    src/frontend_profiler.c
+    src/frontend_screenshot.c
 )
 
 add_executable(mse ${MSE_FRONTEND_SOURCES})
@@ -27,8 +37,13 @@ if(WIN32)
     set_target_properties(mse PROPERTIES WIN32_EXECUTABLE TRUE)
 endif()
 
+include(cmake/LuaDeps.cmake)
+
+add_dependencies(mse imgui_lua_bindings)
+
 target_link_libraries(mse PRIVATE ${PLATFORM_LIBS})
-target_link_libraries(mse PUBLIC libmse cimgui cimplot)
+target_link_libraries(mse PUBLIC libmse cimgui cimplot SDL3-shared)
+target_link_libraries(mse PRIVATE stb)
 
 target_compile_options(mse PRIVATE
     $<$<CONFIG:Debug>:
@@ -61,3 +76,8 @@ if(MINGW)
         COMMENT "Copying MinGW runtime DLLs to output directory"
     )
 endif()
+
+#if(TARGET libluajit)
+#
+#    add_dependencies(mse)
+#endif()

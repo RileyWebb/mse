@@ -54,16 +54,10 @@ typedef enum {
     MIRROR_FOUR_SCREEN         // Requires 4KB VRAM on cartridge
 } MirrorMode;
 
-// Structure to hold sprite data for rendering on the current scanline (after evaluation)
-typedef struct {
-    uint8_t x_pos;        // Current X position of the sprite
-    uint8_t attributes;   // Raw attribute byte (palette, priority, flips)
-    uint8_t pattern_low;  // Pattern data for the current row (low bits)
-    uint8_t pattern_high; // Pattern data for the current row (high bits)
-    uint8_t original_oam_index;
-    // Note: Original Y from OAM isn't stored here as row_in_sprite is calculated during fetch
-} SpriteShifter;
-
+// One resolved sprite pixel. Deliberately still four bytes rather than a packed
+// byte: the pixel loop reads this 61440 times a frame and fetch_sprite_patterns
+// writes it 240 times, so unpacking bitfields on the read side costs far more
+// than the smaller footprint saves. Measured at +2% wall clock when packed.
 typedef struct {
     uint8_t palette_idx;
     bool is_foreground;
@@ -96,7 +90,10 @@ typedef struct PPU {
 
     uint8_t *nametable_ptrs[4]; // O(1) mirroring nametable pointers
     
-    ScanlineSpritePixel scanline_sprite_buffer[256]; // Pre-calculated scanline sprites
+    // 256 visible pixels plus 8 of slack, so the span clear in
+    // fetch_sprite_patterns can always store a fixed 8 entries without first
+    // clamping against the right edge. Nothing ever reads past index 255.
+    ScanlineSpritePixel scanline_sprite_buffer[256 + 8]; // Pre-calculated scanline sprites
 
     uint8_t  bg_nt_latch;            // Nametable byte (tile index) latched for current/next tile
     uint8_t  bg_at_latch_low;        // Attribute palette bits (low bit, expanded to 8 pixels) latched
@@ -127,6 +124,12 @@ typedef struct PPU {
     bool  frame_odd;     // True if the current frame is odd (for cycle skip on pre-render line)
     uint64_t frame_count; // Counts completed PPU frames
 
+    // Ticks actually executed since reset. Counted, not derived from
+    // (frame_count, scanline, cycle): a derivation cannot see the cycle that odd
+    // frames skip, so it drifts away from the real position by one tick per odd
+    // frame and takes the CPU/PPU sync with it.
+    uint64_t total_cycles;
+
     // NMI (Non-Maskable Interrupt) State
     bool nmi_occured;         // Flag: VBlank period has started (set at SL241, C1; cleared at PreRender SL, C1)
     bool nmi_output;          // Flag: NMI generation enabled via PPUCTRL bit 7
@@ -134,18 +137,30 @@ typedef struct PPU {
     bool previous_nmi_output; // Previous NMI condition used to edge-trigger assertions
     bool suppress_vblank_start; // Set when $2002 is read on the VBlank-set cycle
 
-    // Sprite Rendering State
-    uint8_t       sprite_count_current_scanline; // Number of sprites found for the current scanline (in secondary_oam)
-    bool          sprite_zero_on_current_scanline; // True if sprite 0 is among those in secondary_oam
-    SpriteShifter sprite_shifters[8]; // Holds pattern data and attributes for up to 8 sprites on the current scanline
+    // Sprite Rendering State.
+    // Sprites are resolved a scanline at a time into scanline_sprite_buffer;
+    // there is no per-sprite shifter state, and the SpriteShifter array and the
+    // two sprite_zero_* flags that used to sit here were never read.
+    uint8_t sprite_count_current_scanline; // Number of sprites found for the current scanline
+    uint8_t secondary_oam_original_indices[8]; // OAM index each secondary_oam slot came from
 
-    uint8_t secondary_oam_original_indices[8];
-    bool sprite_zero_found_for_next_scanline;
+    // Start X of each span written into scanline_sprite_buffer last time sprite
+    // patterns were fetched. At most 8 sprites x 8 pixels can be written, so
+    // clearing just these costs at most 64 byte-stores instead of 1 KB.
+    uint8_t sprite_span_x[PPU_SECONDARY_OAM_SIZE / 4];
+    uint8_t sprite_span_count;
 
     // Cartridge and System Configuration
     MirrorMode mirror_mode; // Nametable mirroring mode set by cartridge
     
     uint32_t active_palette[64]; // Active 64-color palette derived from the base NES palette and PPUMASK emphasis bits
+
+    // Rendering lookup, indexed directly by a 5-bit palette RAM address. Folds
+    // in the $3F10/$14/$18/$1C mirroring, the 6-bit colour mask, the grayscale
+    // bit and the emphasis bits, so emitting a pixel is one load rather than a
+    // chain of three dependent ones. Rebuilt whenever any input changes.
+    uint32_t final_color[32];
+    uint8_t  final_index[32];
 
     // Output
     uint32_t *framebuffer;
@@ -162,11 +177,11 @@ void PPU_Reset(PPU *ppu);
 // --- PPU Execution Function ---
 void PPU_Step(PPU *ppu); // Advances PPU by one clock cycle
 void PPU_CatchUp(PPU *ppu); // Advances PPU to catch up with CPU cycles
+uint64_t PPU_GetTotalCycles(PPU *ppu); // Ticks executed since reset
 
 // --- PPU Register Access Functions (CPU interface) ---
 uint8_t PPU_ReadRegister(PPU *ppu, uint16_t addr);
 void PPU_WriteRegister(PPU *ppu, uint16_t addr, uint8_t value);
-void PPU_DoOAMDMA(PPU *ppu, const uint8_t *dma_page_data); // Handles $4014 OAM DMA transfer
 
 // --- PPU Open Bus Functions (CPU bus interface) ---
 // These functions manage the PPU's open bus value, which decays over time
