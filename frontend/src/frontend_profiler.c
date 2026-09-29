@@ -13,6 +13,8 @@
 
 #include "frontend_profiler.h"
 
+#include "frontend_widgets.h"
+
 #include "frontend_cimgui.h"
 #include "frontend_ui.h"
 #include "libmse/libmse_cvar.h"
@@ -21,15 +23,31 @@
 // A frame that fits in the budget is unremarkable; one that runs over is the
 // whole reason the window is open. The graph and the frame readout use the
 // same three colours so they agree at a glance.
-static const ImVec4 COLOUR_GOOD    = {0.42f, 0.82f, 0.51f, 1.00f};
-static const ImVec4 COLOUR_WARN    = {0.96f, 0.78f, 0.35f, 1.00f};
-static const ImVec4 COLOUR_BAD     = {0.96f, 0.44f, 0.42f, 1.00f};
-static const ImVec4 COLOUR_DIM     = {0.55f, 0.57f, 0.62f, 1.00f};
-static const ImVec4 COLOUR_HEADING = {0.74f, 0.66f, 0.98f, 1.00f};
+#define COLOUR_GOOD    (mse_frontend_theme()->success)
+#define COLOUR_WARN    (mse_frontend_theme()->warning)
+#define COLOUR_BAD     (mse_frontend_theme()->danger)
+#define COLOUR_DIM     (mse_frontend_theme()->text_muted)
+#define COLOUR_HEADING (mse_frontend_theme()->accent)
 
-static int   g_profiler_enabled  = 1;
-static int   g_show_framecounter = 1;
-static float g_frame_budget_ms   = 16.67f;
+// Cvar names belong to whoever declares them, and these are the frontend's,
+// so they are mse_* even though what they control is not. Declared here rather
+// than registered in an init function: the cvar system owns the storage, so
+// these are the values themselves and not a copy that has to be kept in step.
+LIBMSE_CVAR_DEFINE_INT(g_profiler_enabled, "mse_profiler", 1,
+                       "Collect frame profiling data (0 = No, 1 = Yes)");
+LIBMSE_CVAR_DEFINE_FLOAT(g_frame_budget_ms, "mse_profiler_budget_ms", 16.67f,
+                         "Frame budget the profiler colours against, in milliseconds");
+LIBMSE_CVAR_DEFINE_INT(g_show_framecounter, "mse_framecounter", 1,
+                       "Show the frame counter over the emulated image (0 = No, 1 = Yes)");
+LIBMSE_CVAR_DEFINE_INT(g_framecounter_pos, "mse_framecounter_pos",
+                       MSE_FRONTEND_FRAMECOUNTER_TOP_RIGHT,
+                       "Frame counter corner (0 = top left, 1 = top centre, 2 = top right, "
+                       "3 = bottom left, 4 = bottom centre, 5 = bottom right)");
+LIBMSE_CVAR_DEFINE_INT(g_framecounter_detail, "mse_framecounter_detail", 1,
+                       "Show the frame time under the rate (0 = No, 1 = Yes)");
+LIBMSE_CVAR_DEFINE_INT(g_framecounter_graph, "mse_framecounter_graph", 1,
+                       "Show a frame-time trace in the frame counter (0 = No, 1 = Yes)");
+
 static bool  g_flat_view         = false;
 
 // The latest snapshot that was read cleanly, per thread. Kept rather than
@@ -41,26 +59,90 @@ static bool                          g_view_ok[LIBMSE_PROFILER_MAX_THREADS];
 
 void mse_frontend_profiler_init(void)
 {
-	// Cvar names belong to whoever registers them, and these are the
-	// frontend's, so they are mse_* even though the data behind them is not.
-	libmse_cvar_register("mse_profiler", LIBMSE_CVAR_INT, &g_profiler_enabled,
-	                     "Collect frame profiling data (0 = No, 1 = Yes)");
-	libmse_cvar_register("mse_profiler_budget_ms", LIBMSE_CVAR_FLOAT, &g_frame_budget_ms,
-	                     "Frame budget the profiler colours against, in milliseconds");
-	libmse_cvar_register("mse_framecounter", LIBMSE_CVAR_INT, &g_show_framecounter,
-	                     "Show the frame counter over the emulated image (0 = No, 1 = Yes)");
+	// The cvars above defined themselves; all that is left is to act on what
+	// the config had to say about this one.
+	libmse_profiler_set_enabled(*g_profiler_enabled != 0);
+}
 
-	libmse_profiler_set_enabled(g_profiler_enabled != 0);
+int mse_frontend_profiler_framecounter_pos(void)
+{
+	if ((*g_framecounter_pos) < 0 || (*g_framecounter_pos) >= MSE_FRONTEND_FRAMECOUNTER_POS_COUNT) {
+		return MSE_FRONTEND_FRAMECOUNTER_TOP_RIGHT;
+	}
+	return (*g_framecounter_pos);
+}
+
+void mse_frontend_profiler_set_framecounter_pos(int pos)
+{
+	if (pos >= 0 && pos < MSE_FRONTEND_FRAMECOUNTER_POS_COUNT) {
+		(*g_framecounter_pos) = pos;
+	}
+}
+
+const char *mse_frontend_profiler_framecounter_pos_name(int pos)
+{
+	switch (pos) {
+	case MSE_FRONTEND_FRAMECOUNTER_TOP_LEFT:      return "Top left";
+	case MSE_FRONTEND_FRAMECOUNTER_TOP_CENTRE:    return "Top centre";
+	case MSE_FRONTEND_FRAMECOUNTER_BOTTOM_LEFT:   return "Bottom left";
+	case MSE_FRONTEND_FRAMECOUNTER_BOTTOM_CENTRE: return "Bottom centre";
+	case MSE_FRONTEND_FRAMECOUNTER_BOTTOM_RIGHT:  return "Bottom right";
+	case MSE_FRONTEND_FRAMECOUNTER_TOP_RIGHT:
+	default:                                      return "Top right";
+	}
+}
+
+bool mse_frontend_profiler_framecounter_detailed(void)
+{
+	return (*g_framecounter_detail) != 0;
+}
+
+void mse_frontend_profiler_set_framecounter_detailed(bool detailed)
+{
+	(*g_framecounter_detail) = detailed ? 1 : 0;
+}
+
+bool mse_frontend_profiler_framecounter_graph(void)
+{
+	return (*g_framecounter_graph) != 0;
+}
+
+void mse_frontend_profiler_set_framecounter_graph(bool graph)
+{
+	(*g_framecounter_graph) = graph ? 1 : 0;
+}
+
+bool mse_frontend_profiler_enabled(void)
+{
+	return (*g_profiler_enabled) != 0;
+}
+
+void mse_frontend_profiler_set_enabled(bool enabled)
+{
+	(*g_profiler_enabled) = enabled ? 1 : 0;
+	libmse_profiler_set_enabled(enabled);
+}
+
+float mse_frontend_profiler_budget_ms(void)
+{
+	return (*g_frame_budget_ms);
+}
+
+void mse_frontend_profiler_set_budget_ms(float budget)
+{
+	if (budget > 0.1f) {
+		(*g_frame_budget_ms) = budget;
+	}
 }
 
 bool mse_frontend_profiler_framecounter_visible(void)
 {
-	return g_show_framecounter != 0;
+	return (*g_show_framecounter) != 0;
 }
 
 void mse_frontend_profiler_set_framecounter_visible(bool visible)
 {
-	g_show_framecounter = visible ? 1 : 0;
+	(*g_show_framecounter) = visible ? 1 : 0;
 }
 
 // Every snapshot for this UI frame is taken before any of it is drawn, so the
@@ -113,10 +195,10 @@ static float profiler_ms(uint64_t nanoseconds)
 
 static ImVec4 profiler_budget_colour(float milliseconds)
 {
-	if (g_frame_budget_ms <= 0.0f) {
+	if ((*g_frame_budget_ms) <= 0.0f) {
 		return COLOUR_DIM;
 	}
-	const float ratio = milliseconds / g_frame_budget_ms;
+	const float ratio = milliseconds / (*g_frame_budget_ms);
 	if (ratio > 1.5f) return COLOUR_BAD;
 	if (ratio > 1.0f) return COLOUR_WARN;
 	return COLOUR_GOOD;
@@ -129,14 +211,85 @@ static ImVec4 profiler_budget_colour(float milliseconds)
 // tracks the picture when the view is resized or goes fullscreen.
 // ---------------------------------------------------------------------------
 
+// A frame-time trace small enough to live inside the counter.
+//
+// Scaled to the worst frame on screen, like the graph in the profiler window,
+// and for the same reason: pinned to the budget instead, a thread running well
+// inside it draws a flat line along the bottom and the variation you wanted to
+// see disappears. The budget line is drawn only when it lands inside the
+// scale, so it shows up exactly when it has something to say.
+static void profiler_draw_sparkline(ImDrawList *draw_list, const libmse_profiler_thread_view_t *view,
+                                    ImVec2 min, ImVec2 max)
+{
+	const float width  = max.x - min.x;
+	const float height = max.y - min.y;
+	if (width <= 2.0f || height <= 2.0f) {
+		return;
+	}
+
+	// Opaque, not a tint: the thing underneath is arbitrary game output, and a
+	// translucent panel let sprites show through the trace.
+	ImDrawList_AddRectFilled(draw_list, min, max, igGetColorU32_Vec4((ImVec4){0.0f, 0.0f, 0.0f, 0.82f}),
+	                         mse_frontend_ui_px(2.0f), 0);
+
+	float peak = 0.0f;
+	for (uint32_t i = 0; i < view->history_count; ++i) {
+		if (view->history[i] > peak) {
+			peak = view->history[i];
+		}
+	}
+	peak *= 1.15f; // headroom, so the worst frame is not flush with the top
+	if (peak <= 0.0001f) {
+		return;
+	}
+
+	// One sample per column, newest at the right. More samples than columns
+	// would just alias, so only the most recent are drawn.
+	const uint32_t columns = (uint32_t)width;
+	uint32_t       count   = view->history_count < columns ? view->history_count : columns;
+	if (count < 2) {
+		return;
+	}
+
+	ImVec2 points[256];
+	if (count > 256) {
+		count = 256;
+	}
+
+	const float step = width / (float)(count - 1);
+	for (uint32_t i = 0; i < count; ++i) {
+		const float sample = view->history[view->history_count - count + i];
+		float       ratio  = sample / peak;
+		if (ratio > 1.0f) ratio = 1.0f;
+		if (ratio < 0.0f) ratio = 0.0f;
+
+		points[i].x = min.x + (step * (float)i);
+		points[i].y = max.y - (ratio * height);
+
+		// Filled under the line, a column at a time: an area this shape is not
+		// convex, so the one-call fill is no use here.
+		ImDrawList_AddRectFilled(draw_list, (ImVec2){points[i].x, points[i].y}, (ImVec2){points[i].x + step, max.y},
+		                         mse_frontend_theme_u32(profiler_budget_colour(sample), 0.30f), 0.0f, 0);
+	}
+
+	if ((*g_frame_budget_ms) > 0.0f && (*g_frame_budget_ms) < peak) {
+		const float budget_y = max.y - (((*g_frame_budget_ms) / peak) * height);
+		ImDrawList_AddLine(draw_list, (ImVec2){min.x, budget_y}, (ImVec2){max.x, budget_y},
+		                   mse_frontend_theme_u32(COLOUR_DIM, 0.45f), 1.0f);
+	}
+
+	ImDrawList_AddPolyline(draw_list, points, (int)count,
+	                       igGetColorU32_Vec4(profiler_budget_colour(view->history[view->history_count - 1])),
+	                       0, mse_frontend_ui_px(1.4f));
+}
+
 void mse_frontend_profiler_draw_framecounter(float x, float y, float width, float height)
 {
-	(void)height;
 
 	// Not gated on libmse_profiler_enabled. The counter runs on frame pacing,
 	// which the profiler publishes whether or not zone collection is on, so
 	// unticking "Enabled" in the profiler window does not switch this off.
-	if (g_show_framecounter == 0) {
+	if ((*g_show_framecounter) == 0) {
 		return;
 	}
 
@@ -157,6 +310,8 @@ void mse_frontend_profiler_draw_framecounter(float x, float y, float width, floa
 	const float mean_ms = total / (float)window;
 	const float fps     = mean_ms > 0.0f ? 1000.0f / mean_ms : 0.0f;
 
+	const bool detailed = (*g_framecounter_detail) != 0;
+
 	char rate[32];
 	char timing[32];
 	snprintf(rate, sizeof(rate), "%.1f FPS", fps);
@@ -168,32 +323,69 @@ void mse_frontend_profiler_draw_framecounter(float x, float y, float width, floa
 	}
 
 	const ImVec2 rate_size   = igCalcTextSize(rate, NULL, false, -1.0f);
-	const ImVec2 timing_size = igCalcTextSize(timing, NULL, false, -1.0f);
+	const ImVec2 timing_size = detailed ? igCalcTextSize(timing, NULL, false, -1.0f) : (ImVec2){0.0f, 0.0f};
 
-	const float pad       = mse_frontend_ui_px(6.0f);
-	const float margin    = mse_frontend_ui_px(8.0f);
-	const float box_width = (rate_size.x > timing_size.x ? rate_size.x : timing_size.x) + pad * 2.0f;
-	const float box_height = rate_size.y + timing_size.y + pad * 2.0f;
+	const bool  graphed  = (*g_framecounter_graph) != 0 && view->history_count > 1;
+	const float pad      = mse_frontend_ui_px(6.0f);
+	const float margin   = mse_frontend_ui_px(8.0f);
+	const float graph_h  = graphed ? mse_frontend_ui_px(22.0f) : 0.0f;
+	const float graph_gap = graphed ? mse_frontend_ui_px(4.0f) : 0.0f;
 
-	const float right = x + width - margin;
-	const float top   = y + margin;
+	// The trace needs a usable width even when the numbers are narrow, so the
+	// box grows to fit it rather than squeezing it into a thumbnail.
+	float content_w = rate_size.x > timing_size.x ? rate_size.x : timing_size.x;
+	if (graphed && content_w < mse_frontend_ui_px(92.0f)) {
+		content_w = mse_frontend_ui_px(92.0f);
+	}
+
+	const float box_width  = content_w + (pad * 2.0f);
+	const float box_height = rate_size.y + timing_size.y + graph_h + graph_gap + (pad * 2.0f);
+
+	// Placed from the corner the user picked, within the image rather than the
+	// window: the picture is letterboxed, and a counter in the black bar reads
+	// as a bug.
+	const int pos = mse_frontend_profiler_framecounter_pos();
+
+	float left = x + margin;
+	switch (pos) {
+	case MSE_FRONTEND_FRAMECOUNTER_TOP_CENTRE:
+	case MSE_FRONTEND_FRAMECOUNTER_BOTTOM_CENTRE:
+		left = x + ((width - box_width) * 0.5f);
+		break;
+	case MSE_FRONTEND_FRAMECOUNTER_TOP_RIGHT:
+	case MSE_FRONTEND_FRAMECOUNTER_BOTTOM_RIGHT:
+		left = x + width - margin - box_width;
+		break;
+	default:
+		break;
+	}
+
+	const bool  bottom = pos >= MSE_FRONTEND_FRAMECOUNTER_BOTTOM_LEFT;
+	const float top    = bottom ? (y + height - margin - box_height) : (y + margin);
 
 	// A backing panel, because the thing underneath is arbitrary game output
 	// and white-on-white is not a frame counter.
-	ImDrawList_AddRectFilled(draw_list,
-	                         (ImVec2){right - box_width, top},
-	                         (ImVec2){right, top + box_height},
-	                         igGetColorU32_Vec4((ImVec4){0.0f, 0.0f, 0.0f, 0.55f}),
-	                         mse_frontend_ui_px(4.0f), 0);
+	ImDrawList_AddRectFilled(draw_list, (ImVec2){left, top}, (ImVec2){left + box_width, top + box_height},
+	                         igGetColorU32_Vec4((ImVec4){0.0f, 0.0f, 0.0f, 0.55f}), mse_frontend_ui_px(4.0f), 0);
 
-	// Right-aligned, so the box does not twitch as the digits change width.
-	ImDrawList_AddText_Vec2(draw_list,
-	                        (ImVec2){right - pad - rate_size.x, top + pad},
+	// Right-aligned inside the box, so it does not twitch as the digits change
+	// width.
+	const float text_right = left + box_width - pad;
+
+	ImDrawList_AddText_Vec2(draw_list, (ImVec2){text_right - rate_size.x, top + pad},
 	                        igGetColorU32_Vec4(profiler_budget_colour(mean_ms)), rate, NULL);
 
-	ImDrawList_AddText_Vec2(draw_list,
-	                        (ImVec2){right - pad - timing_size.x, top + pad + rate_size.y},
-	                        igGetColorU32_Vec4(COLOUR_DIM), timing, NULL);
+	if (detailed) {
+		ImDrawList_AddText_Vec2(draw_list, (ImVec2){text_right - timing_size.x, top + pad + rate_size.y},
+		                        igGetColorU32_Vec4(COLOUR_DIM), timing, NULL);
+	}
+
+	if (graphed) {
+		const ImVec2 graph_min = {left + pad, top + pad + rate_size.y + timing_size.y + graph_gap};
+		const ImVec2 graph_max = {left + box_width - pad, graph_min.y + graph_h};
+
+		profiler_draw_sparkline(draw_list, view, graph_min, graph_max);
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -218,7 +410,7 @@ static void profiler_draw_graph(const libmse_profiler_thread_view_t *view)
 	}
 
 	ImDrawList_AddRectFilled(draw_list, origin, (ImVec2){origin.x + width, origin.y + height},
-	                         igGetColorU32_Vec4((ImVec4){0.08f, 0.08f, 0.11f, 1.0f}),
+	                         igGetColorU32_Vec4(mse_frontend_theme()->bg_sunken),
 	                         mse_frontend_ui_px(3.0f), 0);
 
 	// Scaled to the worst frame on screen, not to the budget. Pinning the
@@ -262,10 +454,10 @@ static void profiler_draw_graph(const libmse_profiler_thread_view_t *view)
 		                         igGetColorU32_Vec4(colour), 0.0f, 0);
 	}
 
-	if (g_frame_budget_ms > 0.0f && g_frame_budget_ms < peak) {
-		const float y = origin.y + height - (g_frame_budget_ms / peak) * height;
+	if ((*g_frame_budget_ms) > 0.0f && (*g_frame_budget_ms) < peak) {
+		const float y = origin.y + height - ((*g_frame_budget_ms) / peak) * height;
 		ImDrawList_AddLine(draw_list, (ImVec2){origin.x, y}, (ImVec2){origin.x + width, y},
-		                   igGetColorU32_Vec4((ImVec4){1.0f, 1.0f, 1.0f, 0.28f}), 1.0f);
+		                   mse_frontend_theme_u32(mse_frontend_theme()->text, 0.3f), 1.0f);
 	}
 }
 
@@ -533,9 +725,9 @@ void mse_frontend_profiler_draw(bool *open)
 	// Via a bool rather than casting the cvar's int: ImGui would write a
 	// single byte into a four-byte object, which happens to work here and
 	// would stop working the moment the cvar changed type.
-	bool enabled = g_profiler_enabled != 0;
+	bool enabled = (*g_profiler_enabled) != 0;
 	if (igCheckbox("Enabled", &enabled)) {
-		g_profiler_enabled = enabled ? 1 : 0;
+		(*g_profiler_enabled) = enabled ? 1 : 0;
 		libmse_profiler_set_enabled(enabled);
 	}
 	igSameLine(0.0f, mse_frontend_ui_px(12.0f));
@@ -546,7 +738,7 @@ void mse_frontend_profiler_draw(bool *open)
 	igCheckbox("Flat", &g_flat_view);
 	igSameLine(0.0f, mse_frontend_ui_px(12.0f));
 	igSetNextItemWidth(mse_frontend_ui_px(90.0f));
-	igInputFloat("budget ms", &g_frame_budget_ms, 0.0f, 0.0f, "%.2f", 0);
+	igInputFloat("budget ms", g_frame_budget_ms, 0.0f, 0.0f, "%.2f", 0);
 
 	igSeparator();
 

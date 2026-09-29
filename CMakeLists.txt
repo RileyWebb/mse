@@ -15,7 +15,7 @@ add_subdirectory(frontend)
 add_custom_target(copy_info
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
     ${CMAKE_CURRENT_SOURCE_DIR}/LICENCE
-    ${CMAKE_CURRENT_SOURCE_DIR}/CREDITS
+    ${CMAKE_CURRENT_SOURCE_DIR}/CREDITS.md
     ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 
 add_custom_target(copy_data
@@ -24,6 +24,9 @@ add_custom_target(copy_data
     ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/data/)
 
 add_dependencies(mse copy_info copy_data)
+
+# Packaging: the install tree, and the NSIS installer built from it.
+include(cmake/Install.cmake)
 
 # IGNORE AFTER THIS WIP
 #find_program(GLSLC_EXECUTABLE glslc)

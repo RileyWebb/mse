@@ -46,6 +46,12 @@ bool mse_frontend_input_get_binding(const mse_frontend_input_manager_t *mgr,
                                     size_t                               index,
                                     mse_input_binding_t                 *out);
 
+/* Puts every input back to its default binding. */
+void mse_frontend_input_reset_defaults(mse_frontend_input_manager_t *mgr);
+
+/* How many inputs the attached backend declares. */
+size_t mse_frontend_input_binding_count(const mse_frontend_input_manager_t *mgr);
+
 /* Rebind capture -------------------------------------------------------- */
 /* Begin listening for the next key/button press.
  * When a press is detected the binding at [index] is updated automatically

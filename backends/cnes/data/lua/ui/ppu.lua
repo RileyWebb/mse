@@ -446,31 +446,200 @@ local function draw_oam()
 	end
 end
 
-local function draw_nametables()
-	-- Tile indices as text. A rendered view needs the pattern tables uploaded as
-	-- a texture, which the frontend owns; the indices are what most PPU
-	-- debugging actually needs.
+local NT_TILES = 0
+local NT_IDS   = 1
+
+local nt_mode = ig.int(NT_TILES)
+local nt_grid = ig.bool(true)
+
+local nt_textures = {}
+
+local function nametable_texture(index)
+	if not nt_textures[index] then
+		nt_textures[index] = tex.new(dbg.NAMETABLE_WIDTH, dbg.NAMETABLE_HEIGHT)
+	end
+	return nt_textures[index]
+end
+
+-- The four nametables sit in a 2x2 arrangement on the PPU's address map, so
+-- that is how they are drawn: $2000 top-left, $2400 top-right, $2800 and
+-- $2C00 below. Four collapsing headers hid the one thing the layout tells you,
+-- which is how a scrolling game's screens join up.
+local NT_COLUMNS = 2
+local NT_GAP     = 6
+
+local function draw_nametable_ids(draw_list, data, base, x, y, width, height)
+	-- One string per row rather than one per tile: 960 separate draws per
+	-- nametable is a lot of work for text most of which is the same width.
+	local sample = string.rep("XX ", 32)
+
+	ig.PushFont(nil, 100)
+	local measured = ig.CalcTextSize(sample, nil, false, 0)
+	ig.PopFont()
+
+	local size = measured.x > 0 and (100 * (width / measured.x)) or 0
+	if size < 4 then
+		-- Below this the digits are not glyphs any more, just grey mush.
+		ig.PushFont(nil, 0)
+		draw_list:AddText_Vec2(ig.ImVec2(x + 6, y + 6), ig.U32(0.6, 0.6, 0.6, 1),
+			"too small - resize the panel", nil)
+		ig.PopFont()
+		return
+	end
+
+	local row_height = height / 30
+	local colour     = ig.U32(0.55, 0.78, 1.0, 1.0)
+	local font       = ig.GetFont()
+
+	local cells = {}
+	for row = 0, 29 do
+		local offset = base + row * 32
+		for col = 0, 31 do
+			cells[col + 1] = string.format("%02X", data[offset + col])
+		end
+		draw_list:AddText_FontPtr(font, size, ig.ImVec2(x, y + row * row_height), colour,
+			table.concat(cells, " "), nil, 0, nil)
+	end
+end
+
+local function draw_nametables(state)
 	local data, got = dbg.read(dbg.SPACE.PPU, 0x2000, 0x1000)
 	if got < 0x1000 then
 		ig.TextDisabled("nametables unavailable")
 		return
 	end
 
-	for table_index = 0, 3 do
-		if ig.CollapsingHeader_TreeNodeFlags(
-			string.format("Nametable %d  ($%04X)", table_index, 0x2000 + table_index * 0x400), 0) then
-			local base = table_index * 0x400
-			ig.PushFont(nil, 0)
-			for row = 0, 29 do
-				local cells = {}
-				for col = 0, 31 do
-					cells[#cells + 1] = string.format("%02X", data[base + row * 32 + col])
-				end
-				ig.TextColored(VAL, table.concat(cells, " "))
+	ig.TextColored(DIM, "Show")
+	ig.SameLine(0, 8)
+	ig.RadioButton_IntPtr("Tiles", nt_mode, NT_TILES)
+	ig.SameLine(0, 10)
+	ig.RadioButton_IntPtr("IDs", nt_mode, NT_IDS)
+
+	ig.SameLine(0, 16)
+	ig.Checkbox("Grid", nt_grid)
+
+	ig.SameLine(0, 16)
+	ig.TextColored(DIM, "mirroring")
+	ig.SameLine(0, 6)
+	ig.TextColored(VAL, MIRRORING[tonumber(state.mirroring)] or tostring(state.mirroring))
+
+	ig.Separator()
+
+	-- Sized to whatever room is left, keeping 256:240 so the picture is not
+	-- stretched. Both axes are considered, so a short wide panel shrinks the
+	-- cells rather than running off the bottom.
+	local avail = ig.GetContentRegionAvail()
+	local cell_w = (avail.x - NT_GAP) / NT_COLUMNS
+	local cell_h = (avail.y - NT_GAP) / 2
+
+	local scale = math.min(cell_w / dbg.NAMETABLE_WIDTH, cell_h / dbg.NAMETABLE_HEIGHT)
+	if scale <= 0 then
+		return
+	end
+
+	local w = dbg.NAMETABLE_WIDTH * scale
+	local h = dbg.NAMETABLE_HEIGHT * scale
+
+	local origin = ig.GetCursorScreenPos()
+	local grid_w = w * NT_COLUMNS + NT_GAP
+	origin = ig.ImVec2(origin.x + math.max(0, (avail.x - grid_w) * 0.5), origin.y)
+
+	local draw_list = ig.GetWindowDrawList()
+	local active    = bit.band(state.ppu.ctrl, 0x03)
+	local mouse     = ig.GetIO().MousePos
+
+	for index = 0, 3 do
+		local col = index % NT_COLUMNS
+		local row = math.floor(index / NT_COLUMNS)
+		local x   = origin.x + col * (w + NT_GAP)
+		local y   = origin.y + row * (h + NT_GAP)
+		local base = index * 0x400
+
+		if nt_mode[0] == NT_TILES then
+			local pixels = dbg.render_nametable(index)
+			if pixels ~= nil then
+				local texture = nametable_texture(index)
+				texture:upload(pixels)
+				ig.SetCursorScreenPos(ig.ImVec2(x, y))
+				image_nearest(texture, ig.ImVec2(w, h), ig.ImVec2(0, 0), ig.ImVec2(1, 1))
 			end
-			ig.PopFont()
+		else
+			draw_list:AddRectFilled(ig.ImVec2(x, y), ig.ImVec2(x + w, y + h),
+				ig.U32(0.05, 0.05, 0.07, 1), 0, 0)
+			draw_nametable_ids(draw_list, data, base, x, y, w, h)
+		end
+
+		if nt_grid[0] then
+			-- Attribute boundaries every 32px; the 8px tile grid only once the
+			-- cells are big enough for it to be lines rather than a haze.
+			if scale >= 1.5 then
+				local faint = ig.U32(1, 1, 1, 0.07)
+				for line = 1, 31 do
+					local at = line * 8 * scale
+					draw_list:AddLine(ig.ImVec2(x + at, y), ig.ImVec2(x + at, y + h), faint, 1.0)
+				end
+				for line = 1, 29 do
+					local at = line * 8 * scale
+					draw_list:AddLine(ig.ImVec2(x, y + at), ig.ImVec2(x + w, y + at), faint, 1.0)
+				end
+			end
+
+			local attr = ig.U32(1, 1, 1, 0.16)
+			for line = 1, 7 do
+				local at = line * 32 * scale
+				draw_list:AddLine(ig.ImVec2(x + at, y), ig.ImVec2(x + at, y + h), attr, 1.0)
+			end
+			for line = 1, 7 do
+				local at = line * 32 * scale
+				if at < h then
+					draw_list:AddLine(ig.ImVec2(x, y + at), ig.ImVec2(x + w, y + at), attr, 1.0)
+				end
+			end
+		end
+
+		-- The one PPUCTRL currently points at, so the map says which screen the
+		-- game thinks it is drawing.
+		local is_active = index == active
+		draw_list:AddRect(ig.ImVec2(x, y), ig.ImVec2(x + w, y + h),
+			is_active and ig.U32(0.45, 0.95, 0.5, 0.9) or ig.U32(1, 1, 1, 0.18),
+			0, 0, is_active and 2.0 or 1.0)
+
+		-- Address in the corner, on its own chip so it stays readable over any
+		-- tile underneath it.
+		local label = string.format("$%04X", 0x2000 + base)
+		ig.PushFont(nil, 0)
+		local extent = ig.CalcTextSize(label, nil, false, 0)
+		draw_list:AddRectFilled(ig.ImVec2(x + 3, y + 3),
+			ig.ImVec2(x + 9 + extent.x, y + 5 + extent.y), ig.U32(0, 0, 0, 0.65), 3, 0)
+		draw_list:AddText_Vec2(ig.ImVec2(x + 6, y + 4),
+			is_active and ig.U32(0.45, 0.95, 0.5, 1) or ig.U32(0.75, 0.75, 0.78, 1), label, nil)
+		ig.PopFont()
+
+		if mouse.x >= x and mouse.x < x + w and mouse.y >= y and mouse.y < y + h then
+			local tile_col = math.floor((mouse.x - x) / (8 * scale))
+			local tile_row = math.floor((mouse.y - y) / (8 * scale))
+			if tile_col >= 0 and tile_col < 32 and tile_row >= 0 and tile_row < 30 then
+				local tile = data[base + tile_row * 32 + tile_col]
+				local attribute = data[base + 0x3C0 +
+					math.floor(tile_row / 4) * 8 + math.floor(tile_col / 4)]
+				local shift = bit.bor(bit.lshift(bit.band(tile_row, 2), 1), bit.band(tile_col, 2))
+				local palette = bit.band(bit.rshift(attribute, shift), 0x03)
+
+				draw_list:AddRect(
+					ig.ImVec2(x + tile_col * 8 * scale, y + tile_row * 8 * scale),
+					ig.ImVec2(x + (tile_col + 1) * 8 * scale, y + (tile_row + 1) * 8 * scale),
+					ig.U32(1, 0.85, 0.35, 0.9), 0, 0, 1.0)
+
+				ig.SetTooltip(string.format(
+					"tile $%02X at %d,%d\naddress $%04X\nattribute $%02X  palette %d",
+					tile, tile_col, tile_row,
+					0x2000 + base + tile_row * 32 + tile_col, attribute, palette))
+			end
 		end
 	end
+
+	ig.SetCursorScreenPos(ig.ImVec2(origin.x, origin.y + h * 2 + NT_GAP))
+	ig.Dummy(ig.ImVec2(grid_w, 0))
 end
 
 ui.panel {
@@ -510,7 +679,7 @@ ui.panel {
 				ig.EndTabItem()
 			end
 			if ig.BeginTabItem("Nametables", nil, 0) then
-				draw_nametables()
+				draw_nametables(state)
 				ig.EndTabItem()
 			end
 			ig.EndTabBar()

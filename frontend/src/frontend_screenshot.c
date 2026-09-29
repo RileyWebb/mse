@@ -109,5 +109,5 @@ void mse_frontend_screenshot_init(void)
 {
 	libmse_cmd_register(&(libmse_cmd_t){
 		"mse_screenshot", "Writes the current frame to a PNG (default: a timestamped name)",
-		0, cmd_screenshot_handler});
+		0, cmd_screenshot_handler, "[path.png]"});
 }

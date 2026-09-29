@@ -76,6 +76,68 @@ size_t cnes_debug_render_pattern_table(uint32_t table, uint32_t palette, uint32_
 	return needed;
 }
 
+size_t cnes_debug_render_nametable(uint32_t index, uint32_t *out, size_t out_pixels)
+{
+	const size_t needed = (size_t)CNES_DEBUG_NAMETABLE_WIDTH * CNES_DEBUG_NAMETABLE_HEIGHT;
+	if (out == NULL || out_pixels < needed || index > 3u) {
+		return 0;
+	}
+
+	NES *nes = cnes_backend_lock_nes();
+	if (nes == NULL || nes->ppu == NULL || nes->bus == NULL) {
+		cnes_backend_unlock_nes();
+		return 0;
+	}
+
+	PPU *ppu = nes->ppu;
+
+	// Through nametable_ptrs, so mirroring is already resolved: asking for 2
+	// under horizontal mirroring gives the same memory as 0, which is what the
+	// PPU would fetch.
+	const uint8_t *nametable = PPU_GetNametable(ppu, (int)index);
+	if (nametable == NULL) {
+		cnes_backend_unlock_nes();
+		return 0;
+	}
+
+	const uint16_t table_base = (ppu->ctrl & 0x10u) ? 0x1000u : 0x0000u;
+	const uint32_t backdrop   = ppu_debug_colour(nes, ppu->palette[0]);
+
+	for (int tile_row = 0; tile_row < 30; ++tile_row) {
+		for (int tile_col = 0; tile_col < 32; ++tile_col) {
+			const uint8_t tile = nametable[tile_row * 32 + tile_col];
+
+			// One attribute byte covers 4x4 tiles, two bits per 2x2 quadrant.
+			const uint8_t attribute = nametable[0x3C0 + ((tile_row >> 2) * 8) + (tile_col >> 2)];
+			const int     shift     = ((tile_row & 2) << 1) | (tile_col & 2);
+			const uint8_t palette_base = (uint8_t)(((attribute >> shift) & 0x03u) * 4u);
+
+			const uint16_t tile_base = (uint16_t)(table_base + tile * 16);
+			const int      x         = tile_col * 8;
+			const int      y         = tile_row * 8;
+
+			for (int row = 0; row < 8; ++row) {
+				uint8_t lo, hi;
+				ppu_debug_tile_row(nes->bus, tile_base, row, &lo, &hi);
+
+				uint32_t *scanline = out + (size_t)(y + row) * CNES_DEBUG_NAMETABLE_WIDTH + x;
+
+				for (int column = 0; column < 8; ++column) {
+					const uint8_t pixel = ppu_debug_pixel(lo, hi, column);
+					// Colour 0 is the shared backdrop, not entry 0 of the
+					// tile's own palette; the PPU reads $3F00 for all of them.
+					scanline[column] = (pixel == 0)
+					                       ? backdrop
+					                       : ppu_debug_colour(nes, ppu->palette[palette_base + pixel]);
+				}
+			}
+		}
+	}
+
+	cnes_backend_unlock_nes();
+	return needed;
+}
+
 size_t cnes_debug_render_sprites(uint32_t *out, size_t out_pixels)
 {
 	const size_t needed = (size_t)CNES_DEBUG_SPRITE_WIDTH * CNES_DEBUG_SPRITE_HEIGHT;

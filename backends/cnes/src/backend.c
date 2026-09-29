@@ -12,6 +12,9 @@
 #include "cNES/tas.h"
 #include "cNES/external/cpu_debug.h"
 #include "cNES/external/cheat_api.h"
+#include "cNES/external/tas_debug.h"
+
+#include "backend_internal.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -34,10 +37,33 @@ LIBMSE_API mse_backend_info_t info = {.name		   = "cNES",
 
 /* Define NES inputs (standard controller) */
 LIBMSE_API const mse_backend_input_desc_t inputs[] = {
-	{.id = "DPAD_UP", .type = MSE_INPUT_TYPE_BUTTON},	 {.id = "DPAD_DOWN", .type = MSE_INPUT_TYPE_BUTTON},
-	{.id = "DPAD_LEFT", .type = MSE_INPUT_TYPE_BUTTON},	 {.id = "DPAD_RIGHT", .type = MSE_INPUT_TYPE_BUTTON},
-	{.id = "BTN_A", .type = MSE_INPUT_TYPE_BUTTON},		 {.id = "BTN_B", .type = MSE_INPUT_TYPE_BUTTON},
-	{.id = "BTN_SELECT", .type = MSE_INPUT_TYPE_BUTTON}, {.id = "BTN_START", .type = MSE_INPUT_TYPE_BUTTON},
+	{.id = "DPAD_UP", .name = "Up", .type = MSE_INPUT_TYPE_BUTTON},
+	{.id = "DPAD_DOWN", .name = "Down", .type = MSE_INPUT_TYPE_BUTTON},
+	{.id = "DPAD_LEFT", .name = "Left", .type = MSE_INPUT_TYPE_BUTTON},
+	{.id = "DPAD_RIGHT", .name = "Right", .type = MSE_INPUT_TYPE_BUTTON},
+	{.id = "BTN_A", .name = "A", .type = MSE_INPUT_TYPE_BUTTON},
+	{.id = "BTN_B", .name = "B", .type = MSE_INPUT_TYPE_BUTTON},
+	{.id = "BTN_SELECT", .name = "Select", .type = MSE_INPUT_TYPE_BUTTON},
+	{.id = "BTN_START", .name = "Start", .type = MSE_INPUT_TYPE_BUTTON},
+};
+
+// The pad as the configurator draws it: d-pad on the left, the two pills in
+// the middle, B then A on the right. Body units, so the numbers are just the
+// real controller measured against its own height.
+LIBMSE_API const mse_backend_controller_desc_t controller_desc = {
+	.name   = "NES Controller",
+	.aspect = 2.45f,
+};
+
+LIBMSE_API const mse_backend_input_layout_t input_layouts[] = {
+	{.x = 0.46f, .y = 0.38f, .w = 0.115f, .h = 0.135f, .shape = MSE_INPUT_SHAPE_DPAD}, // up
+	{.x = 0.46f, .y = 0.66f, .w = 0.115f, .h = 0.135f, .shape = MSE_INPUT_SHAPE_DPAD}, // down
+	{.x = 0.32f, .y = 0.52f, .w = 0.135f, .h = 0.115f, .shape = MSE_INPUT_SHAPE_DPAD}, // left
+	{.x = 0.60f, .y = 0.52f, .w = 0.135f, .h = 0.115f, .shape = MSE_INPUT_SHAPE_DPAD}, // right
+	{.x = 2.10f, .y = 0.56f, .w = 0.175f, .h = 0.175f, .shape = MSE_INPUT_SHAPE_CIRCLE}, // A
+	{.x = 1.80f, .y = 0.56f, .w = 0.175f, .h = 0.175f, .shape = MSE_INPUT_SHAPE_CIRCLE}, // B
+	{.x = 1.06f, .y = 0.60f, .w = 0.30f, .h = 0.115f, .shape = MSE_INPUT_SHAPE_PILL},	// select
+	{.x = 1.44f, .y = 0.60f, .w = 0.30f, .h = 0.115f, .shape = MSE_INPUT_SHAPE_PILL},	// start
 };
 LIBMSE_API const size_t input_count = sizeof(inputs) / sizeof(inputs[0]);
 
@@ -51,6 +77,8 @@ LIBMSE_API const char *lua_libraries[] = {
 	"cnes/data/lua/ui/disasm.lua",
 	"cnes/data/lua/ui/memory.lua",
 	"cnes/data/lua/ui/ppu.lua",
+	"cnes/data/lua/ui/smb_run.lua",
+	"cnes/data/lua/ui/tas.lua",
 };
 LIBMSE_API const size_t lua_library_count = sizeof(lua_libraries) / sizeof(lua_libraries[0]);
 
@@ -279,6 +307,11 @@ static void* audio_worker_thread(void* arg) {
 
 static atomic_bool g_paused = false;
 
+// Separate from g_paused: stopped means there is no content to run, which is
+// where the backend starts and where stop() puts it back. The emulation thread
+// idles for either, but only a pause can be lifted with resume.
+static atomic_bool g_stopped = true;
+
 // Work the emulation thread owes before it pauses again. Counts down there.
 static atomic_int g_pending_instructions = 0;
 static atomic_int g_pending_frames       = 0;
@@ -313,8 +346,16 @@ static bool cnes_step_frame_checked(void)
 		TAS_ApplyFrame(g_nes->tas, g_nes);
 	}
 
-	const int starting_frame = g_nes->ppu->frame_odd;
-	while (g_nes->ppu->frame_odd == starting_frame) {
+	// Same pre-render step-off as NES_StepFrame; see the comment there.
+	while (g_nes->ppu->scanline == g_nes->ppu->scanline_prerender) {
+		NES_Step(g_nes);
+		if (cnes_breakpoint_hit(g_nes->cpu->pc)) {
+			return true;
+		}
+	}
+
+	const uint64_t starting_frame = g_nes->ppu->frame_count;
+	while (g_nes->ppu->frame_count == starting_frame) {
 		NES_Step(g_nes);
 		if (cnes_breakpoint_hit(g_nes->cpu->pc)) {
 			return true;
@@ -331,6 +372,63 @@ static void cnes_pause(const char *reason)
 	if (reason != NULL) {
 		libmse_logf("cnes: paused (%s)", reason);
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Transport control (libmse_backend.h)
+// ---------------------------------------------------------------------------
+//
+// Called from the UI thread while the emulation thread is inside its loop, so
+// everything here is an atomic the loop reads; nothing blocks on the NES lock.
+
+LIBMSE_API void backend_pause(void)
+{
+	if (atomic_load_explicit(&g_stopped, memory_order_acquire)) {
+		return; // nothing to pause
+	}
+	cnes_pause("requested");
+}
+
+LIBMSE_API void backend_resume(void)
+{
+	if (atomic_load_explicit(&g_stopped, memory_order_acquire)) {
+		return; // needs a ROM first; load_rom starts it
+	}
+	atomic_store_explicit(&g_paused, false, memory_order_release);
+	libmse_log("cnes: running");
+}
+
+LIBMSE_API void backend_stop(void)
+{
+	if (atomic_load_explicit(&g_stopped, memory_order_acquire)) {
+		return;
+	}
+
+	// Ordered so the emulation thread cannot take another step between being
+	// told to stop and the console being reset under it.
+	atomic_store_explicit(&g_stopped, true, memory_order_release);
+	cnes_pause(NULL);
+
+	// The NES itself is kept: a stop returns to an idle console ready for the
+	// next load, and tearing it down here would race every debug reader.
+	cnes_nes_lock();
+	if (g_nes != NULL) {
+		NES_Reset(g_nes);
+	}
+	cnes_nes_unlock();
+
+	// Whatever was on screen belongs to the ROM that just stopped.
+	atomic_store_explicit(&g_frame_seen, false, memory_order_release);
+
+	libmse_log("cnes: stopped");
+}
+
+LIBMSE_API libmse_backend_state_t backend_get_state(void)
+{
+	if (atomic_load_explicit(&g_stopped, memory_order_acquire)) {
+		return LIBMSE_BACKEND_STOPPED;
+	}
+	return atomic_load_explicit(&g_paused, memory_order_acquire) ? LIBMSE_BACKEND_PAUSED : LIBMSE_BACKEND_RUNNING;
 }
 
 // ---------------------------------------------------------------------------
@@ -415,7 +513,7 @@ static bool cmd_pause_handler(int argc, const char **argv)
 {
 	(void)argc;
 	(void)argv;
-	cnes_pause("requested");
+	backend_pause();
 	return true;
 }
 
@@ -423,8 +521,15 @@ static bool cmd_resume_handler(int argc, const char **argv)
 {
 	(void)argc;
 	(void)argv;
-	atomic_store_explicit(&g_paused, false, memory_order_release);
-	libmse_log("cnes: running");
+	backend_resume();
+	return true;
+}
+
+static bool cmd_stop_handler(int argc, const char **argv)
+{
+	(void)argc;
+	(void)argv;
+	backend_stop();
 	return true;
 }
 
@@ -714,6 +819,17 @@ static bool cmd_sram_load_handler(int argc, const char **argv)
 	return ok;
 }
 
+void cnes_tas_frame_advance(uint32_t frames)
+{
+	if (frames == 0) {
+		frames = 1;
+	}
+	// Queued rather than run here: the emulation thread owns the console, and
+	// it pauses itself again once the count is spent.
+	atomic_fetch_add_explicit(&g_pending_frames, (int)frames, memory_order_release);
+	atomic_store_explicit(&g_paused, true, memory_order_release);
+}
+
 static bool cmd_tas_play_handler(int argc, const char **argv)
 {
 	if (argc < 1) {
@@ -721,25 +837,18 @@ static bool cmd_tas_play_handler(int argc, const char **argv)
 		return false;
 	}
 
-	bool ok = false;
-
-	NES *nes = cnes_backend_lock_nes();
-	if (nes != NULL && nes->tas != NULL) {
-		ok = TAS_Load(nes->tas, argv[0]);
-		if (ok) {
-			// A movie is only reproducible from a known state, and the state a
-			// .fm2 assumes is power-on.
-			NES_Reset(nes);
-			nes->tas->playback_frame = 0;
-			libmse_logf("cnes: playing %s (%zu frames)", argv[0], TAS_GetTotalFrames(nes->tas));
-		}
-	}
-	cnes_backend_unlock_nes();
-
-	if (!ok) {
+	// Loading, resetting and rewinding are one operation, and the TAS panel
+	// needs the same one; it lives behind the debug ABI so both go through it.
+	if (cnes_tas_load(argv[0]) == 0) {
 		DEBUG_ERROR("cnes: could not load TAS %s", argv[0]);
+		return false;
 	}
-	return ok;
+
+	cnes_tas_state_t state;
+	if (cnes_tas_get_state(&state)) {
+		libmse_logf("cnes: playing %s (%llu frames)", argv[0], (unsigned long long)state.total);
+	}
+	return true;
 }
 
 static const char *cnes_cheat_kind_name(const cnes_cheat_t *cheat)
@@ -853,15 +962,7 @@ static bool cmd_tas_stop_handler(int argc, const char **argv)
 	(void)argc;
 	(void)argv;
 
-	NES *nes = cnes_backend_lock_nes();
-	if (nes != NULL && nes->tas != NULL) {
-		// Winding playback to the end is how a TAS reports itself finished, and
-		// it makes TAS_ApplyFrame release the controllers rather than holding
-		// whatever the last frame pressed.
-		nes->tas->playback_frame = nes->tas->frame_count;
-	}
-	cnes_backend_unlock_nes();
-
+	cnes_tas_stop();
 	libmse_log("cnes: TAS playback stopped");
 	return true;
 }
@@ -887,7 +988,8 @@ static void register_cvars(void)
 {
     // Emulation settings
 	//libmse_cvar_register("cnes_emu_region", LIBMSE_CVAR_INT, &(int){0}, "Emulation region: 0 = AUTO, 1 = NTSC, 2 = PAL");
-	libmse_cvar_register("cnes_emu_frame_time", LIBMSE_CVAR_FLOAT, &g_nes->settings.frame_time, "Target frame time in milliseconds");
+	LIBMSE_CVAR_BIND_FLOAT("cnes_emu_frame_time", &g_nes->settings.frame_time,
+						   "Target frame time in milliseconds");
 
     // CPU settings
 	//libmse_cvar_register("cnes_cpu_break_on_illegal", LIBMSE_CVAR_INT, &(int){0}, "Break on illegal instructions: 0 = Disabled, 1 = Enabled");
@@ -903,8 +1005,10 @@ static void register_cvars(void)
 	//libmse_cvar_register("cnes_video_crop_overscan", LIBMSE_CVAR_INT, &(int){1}, "Crop overscan: 0 = Disabled, 1 = Enabled");
 
     // Audio settings
-	libmse_cvar_register("cnes_audio_volume", LIBMSE_CVAR_FLOAT, &g_nes->settings.audio.volume, "Master audio volume (0.0 to 1.0)");
-	libmse_cvar_register("cnes_audio_samplerate", LIBMSE_CVAR_INT, &g_nes->settings.audio.sample_rate, "Audio sample rate for output");
+	LIBMSE_CVAR_BIND_FLOAT("cnes_audio_volume", &g_nes->settings.audio.volume,
+						   "Master audio volume (0.0 to 1.0)");
+	LIBMSE_CVAR_BIND_INT("cnes_audio_samplerate", &g_nes->settings.audio.sample_rate,
+						 "Audio sample rate for output");
 	//libmse_cvar_register("cnes_audio_chan_pulse1", LIBMSE_CVAR_INT, &(int){1}, "Enable Pulse Channel 1: 0 = Disabled, 1 = Enabled");
 	//libmse_cvar_register("cnes_audio_chan_pulse2", LIBMSE_CVAR_INT, &(int){1}, "Enable Pulse Channel 2: 0 = Disabled, 1 = Enabled");
 	//libmse_cvar_register("cnes_audio_chan_triangle", LIBMSE_CVAR_INT, &(int){1}, "Enable Triangle Channel: 0 = Disabled, 1 = Enabled");
@@ -914,39 +1018,41 @@ static void register_cvars(void)
     // Input settings
 	// actuation_threshold is a float. Registering it as LIBMSE_CVAR_INT had the
 	// cvar system reading and writing an int through a float*.
-	libmse_cvar_register("cnes_input_threshold", LIBMSE_CVAR_FLOAT, &g_nes->settings.input.actuation_threshold, "Input actuation threshold (for analog inputs, 0 to 1)");
+	LIBMSE_CVAR_BIND_FLOAT("cnes_input_threshold", &g_nes->settings.input.actuation_threshold,
+						   "Input actuation threshold (for analog inputs, 0 to 1)");
 }
 
 static void register_cmds(void)
 {
 	libmse_cmd_register(&(libmse_cmd_t){"cnes_reset", "Resets the NES emulator state", 0, cmd_reset_handler});
-	libmse_cmd_register(&(libmse_cmd_t){"cnes_load_palette", "Loads a palette from the specified path", 1, cmd_load_palette_handler});
+	libmse_cmd_register(&(libmse_cmd_t){"cnes_load_palette", "Loads a palette from the specified path", 1, cmd_load_palette_handler, "<file.pal>"});
 
 	// Execution control
 	libmse_cmd_register(&(libmse_cmd_t){"cnes_pause", "Halts emulation", 0, cmd_pause_handler});
 	libmse_cmd_register(&(libmse_cmd_t){"cnes_resume", "Resumes emulation", 0, cmd_resume_handler});
-	libmse_cmd_register(&(libmse_cmd_t){"cnes_step", "Runs N instructions and pauses (default 1)", 0, cmd_step_handler});
-	libmse_cmd_register(&(libmse_cmd_t){"cnes_step_frame", "Runs N frames and pauses (default 1)", 0, cmd_step_frame_handler});
-	libmse_cmd_register(&(libmse_cmd_t){"cnes_break", "Pauses when the PC reaches a hex address", 1, cmd_break_handler});
+	libmse_cmd_register(&(libmse_cmd_t){"cnes_stop", "Stops emulation and resets the console", 0, cmd_stop_handler});
+	libmse_cmd_register(&(libmse_cmd_t){"cnes_step", "Runs N instructions and pauses (default 1)", 0, cmd_step_handler, "[count]"});
+	libmse_cmd_register(&(libmse_cmd_t){"cnes_step_frame", "Runs N frames and pauses (default 1)", 0, cmd_step_frame_handler, "[count]"});
+	libmse_cmd_register(&(libmse_cmd_t){"cnes_break", "Pauses when the PC reaches a hex address", 1, cmd_break_handler, "<hex address>"});
 	libmse_cmd_register(&(libmse_cmd_t){"cnes_break_clear", "Removes every breakpoint", 0, cmd_break_clear_handler});
 
 	// Inspection
 	libmse_cmd_register(&(libmse_cmd_t){"cnes_regs", "Prints CPU registers, flags and the instruction at the PC", 0, cmd_regs_handler});
-	libmse_cmd_register(&(libmse_cmd_t){"cnes_disasm", "Disassembles [address] [count], defaulting to the PC", 0, cmd_disasm_handler});
-	libmse_cmd_register(&(libmse_cmd_t){"cnes_peek", "Hex-dumps <space> <address> [length]", 2, cmd_peek_handler});
-	libmse_cmd_register(&(libmse_cmd_t){"cnes_poke", "Writes <space> <address> <byte>", 3, cmd_poke_handler});
+	libmse_cmd_register(&(libmse_cmd_t){"cnes_disasm", "Disassembles from an address, defaulting to the PC", 0, cmd_disasm_handler, "[address] [count]"});
+	libmse_cmd_register(&(libmse_cmd_t){"cnes_peek", "Hex-dumps a region of memory", 2, cmd_peek_handler, "<cpu|ram|ppu|oam|palette|chr|prg> <address> [length]"});
+	libmse_cmd_register(&(libmse_cmd_t){"cnes_poke", "Writes a byte into memory", 3, cmd_poke_handler, "<cpu|ram|ppu|oam|palette|chr|prg> <address> <byte>"});
 
 	// Cartridge RAM and movie playback
-	libmse_cmd_register(&(libmse_cmd_t){"cnes_sram_save", "Writes cartridge RAM to a file", 1, cmd_sram_save_handler});
-	libmse_cmd_register(&(libmse_cmd_t){"cnes_sram_load", "Reads cartridge RAM from a file", 1, cmd_sram_load_handler});
-	libmse_cmd_register(&(libmse_cmd_t){"cnes_tas_play", "Plays an FCEUX .fm2 movie from power-on", 1, cmd_tas_play_handler});
+	libmse_cmd_register(&(libmse_cmd_t){"cnes_sram_save", "Writes cartridge RAM to a file", 1, cmd_sram_save_handler, "<file>"});
+	libmse_cmd_register(&(libmse_cmd_t){"cnes_sram_load", "Reads cartridge RAM from a file", 1, cmd_sram_load_handler, "<file>"});
+	libmse_cmd_register(&(libmse_cmd_t){"cnes_tas_play", "Plays an FCEUX .fm2 movie from power-on", 1, cmd_tas_play_handler, "<movie.fm2>"});
 	libmse_cmd_register(&(libmse_cmd_t){"cnes_tas_stop", "Stops movie playback and releases the controllers", 0, cmd_tas_stop_handler});
 
 	// Cheats
-	libmse_cmd_register(&(libmse_cmd_t){"cnes_cheat_add", "Adds a Game Genie, Pro Action Replay or raw code", 1, cmd_cheat_add_handler});
+	libmse_cmd_register(&(libmse_cmd_t){"cnes_cheat_add", "Adds a Game Genie, Pro Action Replay or raw code", 1, cmd_cheat_add_handler, "<code> [description]"});
 	libmse_cmd_register(&(libmse_cmd_t){"cnes_cheat_list", "Lists the active cheats", 0, cmd_cheat_list_handler});
-	libmse_cmd_register(&(libmse_cmd_t){"cnes_cheat_toggle", "Enables or disables a cheat by index", 1, cmd_cheat_toggle_handler});
-	libmse_cmd_register(&(libmse_cmd_t){"cnes_cheat_remove", "Removes a cheat by index", 1, cmd_cheat_remove_handler});
+	libmse_cmd_register(&(libmse_cmd_t){"cnes_cheat_toggle", "Enables or disables a cheat by index", 1, cmd_cheat_toggle_handler, "<index>"});
+	libmse_cmd_register(&(libmse_cmd_t){"cnes_cheat_remove", "Removes a cheat by index", 1, cmd_cheat_remove_handler, "<index>"});
 	libmse_cmd_register(&(libmse_cmd_t){"cnes_cheat_clear", "Removes every cheat", 0, cmd_cheat_clear_handler});
 	//libmse_cmd_register(&(libmse_cmd_t){"cnes_load_rom", "Loads a ROM from the specified path", 1, (const libmse_cmd_type_t[]){LIBMSE_CMD_STRING}, cmd_load_rom_handler});
 }
@@ -1008,6 +1114,11 @@ LIBMSE_API bool load_rom(const uint8_t *data, size_t size)
 	// ROM patches point into the PRG image the load just replaced, so they have
 	// to be laid down again. Outside the lock above because it takes its own.
 	cnes_cheat_reapply();
+
+	// Loading content is what starts a backend running; there is no separate
+	// "play" step for the frontend to remember to call.
+	atomic_store_explicit(&g_paused, false, memory_order_release);
+	atomic_store_explicit(&g_stopped, false, memory_order_release);
 
 	return true;
 }
@@ -1127,6 +1238,10 @@ LIBMSE_API bool get_frame(mse_frame_t *frame)
 		return false;
 	}
 
+	if (atomic_load_explicit(&g_stopped, memory_order_acquire)) {
+		return false; // no content running
+	}
+
 	if (!atomic_load_explicit(&g_frame_seen, memory_order_acquire)) {
 		return false; // Nothing rendered yet
 	}
@@ -1239,11 +1354,21 @@ LIBMSE_API void start(mse_event_t *stop_event)
 		NES_SetController(g_nes, 0, atomic_load_explicit(&g_controller_state[0], memory_order_relaxed));
 		NES_SetController(g_nes, 1, atomic_load_explicit(&g_controller_state[1], memory_order_relaxed));
 
+		// A movie seek outranks everything below: it has to keep emulating
+		// while the console is paused, it publishes so the picture tracks the
+		// scrub, and it deliberately skips the throttle so it arrives.
+		if (cnes_tas_seek_service(g_nes)) {
+			cnes_frame_publish();
+			cnes_nes_unlock();
+			continue;
+		}
+
 		// What this iteration owes: whole frames, loose instructions, or
 		// nothing at all because the console has stopped us.
 		int instructions = atomic_exchange_explicit(&g_pending_instructions, 0, memory_order_acquire);
 		int frames       = atomic_load_explicit(&g_pending_frames, memory_order_acquire);
-		const bool paused = atomic_load_explicit(&g_paused, memory_order_acquire);
+		const bool paused = atomic_load_explicit(&g_paused, memory_order_acquire) ||
+							atomic_load_explicit(&g_stopped, memory_order_acquire);
 
 		if (paused && instructions == 0 && frames == 0) {
 			// Idle, but still releasing the lock every time round so a memory

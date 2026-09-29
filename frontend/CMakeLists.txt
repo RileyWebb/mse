@@ -11,22 +11,27 @@ include(cmake/cimgui.cmake)
 
 set(MSE_FRONTEND_SOURCES
     src/main.c
+    src/frontend_args.c
     src/frontend_app.c
     src/frontend_imgui.c
     src/frontend_theme.c
+    src/frontend_widgets.c
     src/frontend_help.c
     src/frontend_ui.c
     src/frontend_terminal.c
     src/frontend_settings.c
     src/frontend_input.c
+    src/frontend_controller.c
     src/cimgui_markdown.c
     src/frontend_lua.c
     src/frontend_lua_ui.c
     src/frontend_file_dialog.c
     #src/cimgui_hex.c
     src/frontend_library.c
+    src/frontend_covers.c
     src/frontend_profiler.c
     src/frontend_screenshot.c
+    src/frontend_startup_log.c
 )
 
 add_executable(mse ${MSE_FRONTEND_SOURCES})
@@ -81,3 +86,14 @@ endif()
 #
 #    add_dependencies(mse)
 #endif()
+
+# Themes are configuration, not code: each is a list of cvar assignments the
+# console reads. Shipped ones sit next to the executable; a user's own go in
+# themes/ under the app data directory and are picked up alongside them.
+add_custom_target(mse_themes ALL
+    COMMENT "Deploying themes..."
+    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/themes"
+        "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/themes")
+
+add_dependencies(mse mse_themes)

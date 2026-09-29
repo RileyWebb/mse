@@ -174,8 +174,18 @@ static int mse_frontend_input_thread(void *user_data)
             if (capture_idx >= 0 && (size_t)capture_idx < mgr->binding_count) {
 
                 /* Check keyboard */
-                if (kb_state != NULL) {
+                /* Escape backs out. Binding it would leave the user with no
+                 * way to abandon a rebind they opened by mistake. */
+                if (kb_state != NULL && kb_state[SDL_SCANCODE_ESCAPE]) {
+                    atomic_store(&mgr->capturing, false);
+                    capture_idx = -1;
+                }
+
+                if (capture_idx >= 0 && kb_state != NULL) {
                     for (int sc = SDL_SCANCODE_UNKNOWN + 1; sc < kb_numkeys; ++sc) {
+                        if (sc == SDL_SCANCODE_ESCAPE) {
+                            continue;
+                        }
                         if (kb_state[sc]) {
                             mse_input_binding_t nb;
                             memset(&nb, 0, sizeof(nb));
@@ -275,6 +285,29 @@ void mse_frontend_input_manager_destroy(mse_frontend_input_manager_t *mgr)
     SDL_free(mgr);
 }
 
+/* Caller holds mgr->mutex. */
+static void mse_input_load_defaults_locked(mse_frontend_input_manager_t *mgr)
+{
+    const libmse_backend_t *backend = mgr->backend;
+    if (backend == NULL || backend->input_descs == NULL || backend->input_count == 0U) {
+        return;
+    }
+
+    const size_t count = backend->input_count < MSE_INPUT_MAX_INPUTS
+                             ? backend->input_count
+                             : (size_t)MSE_INPUT_MAX_INPUTS;
+    mgr->binding_count = count;
+
+    for (size_t i = 0; i < count; ++i) {
+        const SDL_Scancode def = mse_input_default_key(backend->input_descs[i].id);
+        if (def != SDL_SCANCODE_UNKNOWN) {
+            mgr->bindings[i].source_type = MSE_INPUT_SOURCE_KEYBOARD;
+            mgr->bindings[i].scancode    = (int)def;
+        }
+        /* else binding stays NONE until the user sets it */
+    }
+}
+
 void mse_frontend_input_manager_set_backend(mse_frontend_input_manager_t *mgr,
                                              libmse_backend_t               *backend)
 {
@@ -289,23 +322,28 @@ void mse_frontend_input_manager_set_backend(mse_frontend_input_manager_t *mgr,
     mgr->binding_count = 0U;
     atomic_store(&mgr->capturing, false);
 
-    if (backend != NULL && backend->input_descs != NULL && backend->input_count > 0U) {
-        size_t count = backend->input_count < MSE_INPUT_MAX_INPUTS
-                           ? backend->input_count
-                           : (size_t)MSE_INPUT_MAX_INPUTS;
-        mgr->binding_count = count;
-
-        for (size_t i = 0; i < count; ++i) {
-            SDL_Scancode def = mse_input_default_key(backend->input_descs[i].id);
-            if (def != SDL_SCANCODE_UNKNOWN) {
-                mgr->bindings[i].source_type = MSE_INPUT_SOURCE_KEYBOARD;
-                mgr->bindings[i].scancode    = (int)def;
-            }
-            /* else binding stays NONE until user sets it */
-        }
-    }
+    mse_input_load_defaults_locked(mgr);
 
     SDL_UnlockMutex(mgr->mutex);
+}
+
+void mse_frontend_input_reset_defaults(mse_frontend_input_manager_t *mgr)
+{
+    if (mgr == NULL) {
+        return;
+    }
+
+    SDL_LockMutex(mgr->mutex);
+    memset(mgr->bindings, 0, sizeof(mgr->bindings));
+    mgr->binding_count = 0U;
+    atomic_store(&mgr->capturing, false);
+    mse_input_load_defaults_locked(mgr);
+    SDL_UnlockMutex(mgr->mutex);
+}
+
+size_t mse_frontend_input_binding_count(const mse_frontend_input_manager_t *mgr)
+{
+    return mgr != NULL ? mgr->binding_count : 0U;
 }
 
 bool mse_frontend_input_thread_start(mse_frontend_input_manager_t *mgr)

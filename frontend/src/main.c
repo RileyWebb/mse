@@ -4,9 +4,21 @@
 #include "libmse/libmse_debug.h"
 
 #include "frontend_app.h"
+#include "frontend_args.h"
 
-int main(void)
+int main(int argc, char **argv)
 {
+	// Parsed before anything is initialised: --help has to answer without
+	// standing up SDL, and the config file it may name is read at the very
+	// top of mse_frontend_run.
+	mse_frontend_args_t args;
+	if (!mse_frontend_args_parse(argc, argv, &args)) {
+		return 2;
+	}
+	if (args.should_exit) {
+		return args.exit_code;
+	}
+
 	if (!libmse_init()) {
 		//DEBUG_ERROR("Failed to initialize libmse");
 		return 1;
@@ -22,10 +34,11 @@ int main(void)
 
 	const mse_frontend_app_config_t config = {
 		.title				= "Multi-System Emulator",
-		.width				= 1280,
-		.height				= 720,
+		.width				= args.width > 0 ? args.width : 1280,
+		.height				= args.height > 0 ? args.height : 720,
 		.resizable			= true,
 		.high_pixel_density = true,
+		.args				= &args,
 	};
 
 	return mse_frontend_run(&config);

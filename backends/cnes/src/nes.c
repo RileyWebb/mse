@@ -87,6 +87,14 @@ NES *NES_Create(void)
 	nes->settings.audio.volume		= 1.0f;
 	nes->settings.frame_time		= 16.6392673398f;
 
+	// The movie player exists for the life of the console, empty until a file
+	// is loaded into it. Optional: everything that touches it null-checks, so
+	// a failed allocation costs playback rather than the emulator.
+	nes->tas = TAS_Create();
+	if (!nes->tas) {
+		DEBUG_WARN("TAS player unavailable; movie playback is disabled");
+	}
+
 	NES_Reset(nes);
 
 	return nes;
@@ -115,6 +123,7 @@ void NES_Destroy(NES *nes)
 		free(nes->bus);
 	}
 	if (nes->rom) ROM_Destroy(nes->rom);
+	if (nes->tas) TAS_Destroy(nes->tas);
 
 	free(nes);
 }
@@ -179,12 +188,6 @@ int NES_Load(NES *nes, ROM *rom)
 
 	NES_Reset(nes);
 
-	//	
-	//nes->tas = TAS_Create();
-	//if (TAS_Load(nes->tas, "speedrun.fm2")) {
-	//	DEBUG_INFO("Successfully loaded TAS replay.");
-	//}
-
 	return 0; // Success
 
 error_after_rom_load:
@@ -235,8 +238,19 @@ void NES_StepFrame(NES *nes)
 	if (!TAS_IsFinished(nes->tas, nes))
 		TAS_ApplyFrame(nes->tas, nes);
 
-	const int starting_frame = nes->ppu->frame_odd;
-	while (nes->ppu->frame_odd == starting_frame) {
+	// A reset parks the PPU at the start of the pre-render line, which this
+	// numbering puts at the *end* of a frame: stepping straight to the next
+	// frame boundary from there runs a single scanline and calls it a frame.
+	// Long enough for a movie to consume an input row while the console does
+	// nothing, which is a frame of desync in every .fm2 played back. Walk off
+	// the pre-render line first so what follows is a whole frame. In steady
+	// state the PPU sits at scanline 0 and this does nothing.
+	while (nes->ppu->scanline == nes->ppu->scanline_prerender) {
+		NES_Step(nes);
+	}
+
+	const uint64_t starting_frame = nes->ppu->frame_count;
+	while (nes->ppu->frame_count == starting_frame) {
 		NES_Step(nes);
 	}
 }

@@ -26,6 +26,7 @@ local by_id  = {}
 --     group   = "cNES",            -- menu grouping, optional
 --     open    = false,             -- initial visibility
 --     flags   = 0,                 -- ImGuiWindowFlags, optional
+--     size    = {640, 420},        -- first-open size, optional
 --     draw    = function() ... end -- contents; the host owns Begin/End
 --   }
 function ui.panel(def)
@@ -40,6 +41,7 @@ function ui.panel(def)
 		existing.title = def.title or existing.title
 		existing.group = def.group or existing.group
 		existing.flags = def.flags or existing.flags
+		existing.size  = def.size or existing.size
 		existing.draw  = def.draw
 		existing.failed = nil
 		return existing
@@ -50,6 +52,7 @@ function ui.panel(def)
 		title = def.title or def.id,
 		group = def.group or "Debug",
 		flags = def.flags or 0,
+		size  = def.size,
 		draw  = def.draw,
 		-- ImGui wants a bool* it can clear when the close button is used.
 		open  = ig.bool(def.open and true or false),
@@ -94,6 +97,22 @@ function ui.count()
 	return #panels
 end
 
+--- Every panel's id and state, for listing from the console and for putting
+--- the open ones back after a reload.
+function ui.list()
+	local out = {}
+	for index, panel in ipairs(panels) do
+		out[index] = {
+			id      = panel.id,
+			title   = panel.title,
+			group   = panel.group,
+			enabled = panel.open[0],
+			failed  = panel.failed,
+		}
+	end
+	return out
+end
+
 -- Menu entries, grouped. Called by the frontend inside its View menu.
 function ui.menu()
 	local groups, order = {}, {}
@@ -130,6 +149,16 @@ end
 function ui.draw()
 	for _, panel in ipairs(panels) do
 		if panel.open[0] and not panel.failed then
+			-- Only the first time it is ever opened. A panel whose contents
+			-- auto-fit opens at whatever its first frame happened to need --
+			-- an empty table is a sliver -- and ImGui then remembers that size
+			-- forever. Asking for one breaks that without overriding a size
+			-- the user has since chosen.
+			if panel.size then
+				ig.SetNextWindowSize(ig.ImVec2(panel.size[1], panel.size[2]),
+					ig.lib.ImGuiCond_FirstUseEver)
+			end
+
 			local visible = ig.Begin(panel.title, panel.open, panel.flags)
 			local ok, err = true, nil
 
