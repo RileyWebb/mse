@@ -1,6 +1,14 @@
 cmake_minimum_required(VERSION 4.1)
 project(mse C)
 
+# libmse and every backend are shared libraries, and they link static ones --
+# SQLite, minizip, stb, LibreSSL. ELF will not take non-PIC objects into a
+# shared object at all ("relocation R_X86_64_PC32 ... recompile with -fPIC"),
+# which is why this build worked on Windows, where PE has no such rule, and
+# failed to link on Linux. Set before anything is added so every fetched
+# dependency inherits it; a no-op on Windows.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin)
 
