@@ -28,6 +28,15 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(luajit_imgui)
 
+# Every Lua file the generator is made of, not just cpp2ffi.lua: upstream split
+# it into cpp2ffi.lua and cpp2ffi_extra.lua, and staging one without the other
+# leaves a require that cannot resolve. Globbed at configure time, which is
+# after cimgui.cmake has fetched it.
+file(GLOB CIMGUI_GENERATOR_LUA "${CIMGUI_DIR}/generator/cpp2ffi*.lua")
+if(NOT CIMGUI_GENERATOR_LUA)
+    message(FATAL_ERROR "No cpp2ffi*.lua in ${CIMGUI_DIR}/generator")
+endif()
+
 set(IMGUI_BINDINGS_WORK "${CMAKE_CURRENT_BINARY_DIR}/imgui_bindings")
 set(IMGUI_BINDINGS_OUT "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/data/lua")
 
@@ -47,8 +56,8 @@ add_custom_command(
             "${CIMGUI_DIR}/generator/output"
             "${IMGUI_BINDINGS_WORK}/cimgui/generator/output"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CIMGUI_DIR}/generator/cpp2ffi.lua"
-            "${IMGUI_BINDINGS_WORK}/cimgui/generator/cpp2ffi.lua"
+            ${CIMGUI_GENERATOR_LUA}
+            "${IMGUI_BINDINGS_WORK}/cimgui/generator/"
 
     COMMAND ${CMAKE_COMMAND} -E chdir "${IMGUI_BINDINGS_WORK}/lua"
             $<TARGET_FILE:luajit>
