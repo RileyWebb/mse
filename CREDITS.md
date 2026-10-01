@@ -27,8 +27,8 @@ MSE is built on the work of the projects below. Each is used under its own licen
 
 ## Code adapted into this repository
 
-- **`frontend/src/cimgui_markdown.c`, `cimgui_markdown.h`**: based on [imgui_markdown](https://github.com/enkisoftware/imgui_markdown) by Juliette Foucaut and Doug Binks. zlib License.
-- **`frontend/src/cimgui_hex.c`**: based on [imgui_hex_editor](https://github.com/Teselka/imgui_hex_editor) by Teselka. MIT License.
+- `frontend/src/cimgui_markdown.c`, `cimgui_markdown.h`: based on [imgui_markdown](https://github.com/enkisoftware/imgui_markdown) by Juliette Foucaut and Doug Binks. zlib License.
+- `frontend/src/cimgui_hex.c`: based on [imgui_hex_editor](https://github.com/Teselka/imgui_hex_editor) by Teselka. MIT License.
 
 ## Fonts (included in `data/fonts/`)
 
@@ -41,6 +41,6 @@ Both fonts are the [Nerd Fonts](https://www.nerdfonts.com) patched versions (Rya
 
 Each backend credits its own dependencies and resources in its own folder:
 
-- **cNES**: [backends/cnes/CREDITS.md](https://github.com/RileyWebb/mse/blob/master/backends/cnes/CREDITS.md)
+- cNES: [backends/cnes/CREDITS.md](https://github.com/RileyWebb/mse/blob/master/backends/cnes/CREDITS.md)
 
 The SDL logo shown in the README's badge belongs to the SDL project.

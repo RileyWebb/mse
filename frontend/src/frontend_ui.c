@@ -4,6 +4,8 @@
 #include "frontend_cimgui.h"
 #include "frontend_imgui.h"
 #include "frontend_widgets.h"
+#include "frontend_logo.h"
+#include "frontend_chrome.h"
 #include "frontend_icons.h"
 #include "frontend_app.h"
 #include "libmse/libmse_debug.h"
@@ -199,11 +201,7 @@ static void mse_frontend_ui_draw_brand(bool compact)
 	const float mark   = compact ? mse_frontend_ui_px(30.0f) : (name_size + meta_size);
 	const float height = mark;
 
-	ImDrawList_AddRectFilled(dl, pos, (ImVec2){pos.x + mark, pos.y + mark}, igGetColorU32_Vec4(t->accent),
-							 t->rounding_sm, 0);
-	ImDrawList_AddRectFilled(dl, (ImVec2){pos.x + (mark * 0.3f), pos.y + (mark * 0.3f)},
-							 (ImVec2){pos.x + (mark * 0.7f), pos.y + (mark * 0.7f)},
-							 igGetColorU32_Vec4(t->text_on_accent), mse_frontend_ui_px(2.0f), 0);
+	mse_frontend_logo_draw(dl, pos, mark);
 
 	if (!compact) {
 		const float text_x = pos.x + mark + mse_frontend_ui_px(12.0f);
@@ -1099,6 +1097,8 @@ static void mse_frontend_ui_draw_menu_bar(mse_frontend_ui_state_t *state)
 						   (ImVec2){bar_pos.x + bar_size.x, bar_pos.y + bar_size.y - 1.0f},
 						   igGetColorU32_Vec4(t->border), 1.0f);
 
+		mse_frontend_chrome_menu_bar_begin();
+
 		if (igBeginMenu("File", true)) {
 			if (igMenuItem_Bool("Open ROM...", "Ctrl+O", false, true)) {
 				mse_frontend_ui_open_rom_file_dialog(state);
@@ -1225,6 +1225,8 @@ static void mse_frontend_ui_draw_menu_bar(mse_frontend_ui_state_t *state)
 			if (igMenuItem_Bool("Credits", NULL, false, true)) state->show_credits_window = true;
 			igEndMenu();
 		}
+
+		mse_frontend_chrome_menu_bar_end();
 
 		igEndMainMenuBar();
 	}

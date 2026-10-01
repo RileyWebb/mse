@@ -1,3 +1,5 @@
+<p align="center"><img src="data/logo/mse.svg" width="128" alt="MSE"></p>
+
 # Multi-System Emulator
 
 [![Build Status](https://github.com/RileyWebb/mse/actions/workflows/cmake-multi-platform.yml/badge.svg)](https://github.com/RileyWebb/mse/actions)

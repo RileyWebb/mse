@@ -15,6 +15,7 @@
 #include "libmse/libmse_cvar.h"
 #include "libmse/libmse_debug.h"
 #include "frontend_profiler.h"
+#include "frontend_chrome.h"
 
 #define TOK (mse_frontend_theme())
 
@@ -375,7 +376,30 @@ static void mse_frontend_settings_tab_body(mse_frontend_ui_state_t *state)
 		mse_frontend_ui_gap(4.0f);
 		mse_frontend_settings_theme_picker(state);
 		mse_frontend_ui_gap(4.0f);
-		mse_frontend_ui_muted("Set from the console too: %s", "set mse_theme 0..4");
+		mse_frontend_ui_muted("Or from the console: %s", "exec themes/<name>.cfg");
+
+		mse_frontend_ui_gap(10.0f);
+		mse_frontend_ui_section("WINDOW");
+		{
+			static const char *decorations[] = {"System", "Custom"};
+
+			// Says why when the setting is being overruled, rather than
+			// leaving someone to wonder why Custom does nothing.
+			char        help[160];
+			const char *tiler = mse_frontend_chrome_tiling_wm();
+			if (tiler != NULL) {
+				snprintf(help, sizeof(help), "%s is a tiling window manager, so the system's is used either way.", tiler);
+			} else {
+				snprintf(help, sizeof(help), "Custom draws the title bar and window buttons in the frontend's style.");
+			}
+
+			mse_frontend_settings_row_begin("Window decoration", help, control_w);
+			int decoration = mse_frontend_chrome_mode();
+			if (igCombo_Str_arr("##window_decoration", &decoration, decorations, 2, 2)) {
+				libmse_cvar_set_i("mse_window_decoration", decoration);
+			}
+			mse_frontend_settings_row_end();
+		}
 		break;
 
 	case MSE_FRONTEND_SETTINGS_TAB_PERFORMANCE: {
@@ -533,9 +557,9 @@ void mse_frontend_ui_draw_settings_modal(mse_frontend_ui_state_t *state)
 				{MSE_ICON_VOLUME_HIGH, MSE_FRONTEND_SETTINGS_TAB_AUDIO},
 				{MSE_ICON_KEYBOARD, MSE_FRONTEND_SETTINGS_TAB_CONTROLS},
 				{MSE_ICON_APPEARANCE, MSE_FRONTEND_SETTINGS_TAB_APPEARANCE},
-				{MSE_ICON_CAPS, MSE_FRONTEND_SETTINGS_TAB_PERFORMANCE},
+				{MSE_ICON_PERFORMANCE, MSE_FRONTEND_SETTINGS_TAB_PERFORMANCE},
 				{MSE_ICON_POWER, MSE_FRONTEND_SETTINGS_TAB_BEHAVIOR},
-				{MSE_ICON_CAPS, MSE_FRONTEND_SETTINGS_TAB_ADVANCED},
+				{MSE_ICON_ADVANCED, MSE_FRONTEND_SETTINGS_TAB_ADVANCED},
 			};
 
 			for (size_t i = 0; i < sizeof(tabs) / sizeof(tabs[0]); ++i) {

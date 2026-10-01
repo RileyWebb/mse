@@ -18,10 +18,18 @@ LIBMSE_CVAR_DEFINE_STRING(g_cv_font, "mse_font", "data/fonts/JetBrainsMono.ttf",
 static ImFont *g_font_body = NULL;
 static ImFont *g_font_title = NULL;
 static ImFont *g_font_icon = NULL;
-static float g_font_size_small = 0.0f;
-static float g_font_size_body = 0.0f;
-static float g_font_size_title = 0.0f;
-static float g_font_size_icon = 0.0f;
+// Sizes at 1x. What callers get is these times the interface scale, read
+// fresh every time: ImGui 1.92 bakes glyphs at whatever size is asked for, so
+// there is no atlas to rebuild when the scale moves. These used to be
+// multiplied out once at startup, which left every piece of text -- and the
+// logo, which is sized to sit beside two lines of it -- at the display scale
+// the app launched with while the rest of the layout followed mse_content_scale.
+#define MSE_FONT_BASE_SMALL 13.0f
+#define MSE_FONT_BASE_BODY  16.0f
+#define MSE_FONT_BASE_TITLE 22.0f
+#define MSE_FONT_BASE_ICON  24.0f
+
+static float g_font_scale = 1.0f;
 
 static const ImWchar g_icon_ranges[] = {
     0x2190, 0x21FF, // Arrows
@@ -79,10 +87,10 @@ static bool mse_frontend_imgui_build_fonts(void) {
     // attached -- leaves a window that draws nothing at all.
     ImFontAtlas_ClearFonts(io->Fonts);
 
-    ImFont *body  = mse_frontend_imgui_add_font(path, g_font_size_body, g_body_ranges);
-    ImFont *small = mse_frontend_imgui_add_font(path, g_font_size_small, NULL);
-    ImFont *title = mse_frontend_imgui_add_font(path, g_font_size_title, NULL);
-    ImFont *icon  = mse_frontend_imgui_add_font(path, g_font_size_icon, g_icon_ranges);
+    ImFont *body  = mse_frontend_imgui_add_font(path, mse_frontend_imgui_font_size_body(), g_body_ranges);
+    ImFont *small = mse_frontend_imgui_add_font(path, mse_frontend_imgui_font_size_small(), NULL);
+    ImFont *title = mse_frontend_imgui_add_font(path, mse_frontend_imgui_font_size_title(), NULL);
+    ImFont *icon  = mse_frontend_imgui_add_font(path, mse_frontend_imgui_font_size_icon(), g_icon_ranges);
 
     if (body == NULL || small == NULL || title == NULL || icon == NULL) {
         DEBUG_ERROR("Could not load font '%s'", path);
@@ -140,11 +148,8 @@ bool mse_frontend_imgui_initialize(mse_frontend_imgui_backend_t *backend, const 
         }
     }
 
-    const float font_scale = backend->content_scale;
-    g_font_size_small = 13.0f * font_scale;
-    g_font_size_body = 16.0f * font_scale;
-    g_font_size_title = 22.0f * font_scale;
-    g_font_size_icon = 24.0f * font_scale;
+    // The display scale until the UI state is up and hands over the real one.
+    mse_frontend_imgui_set_font_scale(backend->content_scale);
 
     if (!mse_frontend_imgui_build_fonts()) {
         igDestroyContext(NULL);
@@ -207,10 +212,7 @@ void mse_frontend_imgui_shutdown(mse_frontend_imgui_backend_t *backend) {
     g_font_body = NULL;
     g_font_title = NULL;
     g_font_icon = NULL;
-    g_font_size_small = 0.0f;
-    g_font_size_body = 0.0f;
-    g_font_size_title = 0.0f;
-    g_font_size_icon = 0.0f;
+    g_font_scale = 1.0f;
 
     backend->initialized = false;
     backend->window = NULL;
@@ -241,19 +243,31 @@ ImFont *mse_frontend_imgui_font_icon(void) {
 }
 
 float mse_frontend_imgui_font_size_small(void) {
-    return g_font_size_small;
+    return MSE_FONT_BASE_SMALL * g_font_scale;
 }
 
 float mse_frontend_imgui_font_size_body(void) {
-    return g_font_size_body;
+    return MSE_FONT_BASE_BODY * g_font_scale;
 }
 
 float mse_frontend_imgui_font_size_title(void) {
-    return g_font_size_title;
+    return MSE_FONT_BASE_TITLE * g_font_scale;
 }
 
 float mse_frontend_imgui_font_size_icon(void) {
-    return g_font_size_icon;
+    return MSE_FONT_BASE_ICON * g_font_scale;
+}
+
+void mse_frontend_imgui_set_font_scale(float scale) {
+    g_font_scale = (scale > 0.0f) ? scale : 1.0f;
+
+    // Text drawn without pushing a font takes its size from here. The explicit
+    // sizes above go through PushFont and AddText, which ImGui does not scale
+    // again as long as FontScaleMain stays at 1 -- so the scale lives in the
+    // sizes, once, and never in FontScaleMain as well.
+    if (igGetCurrentContext() != NULL) {
+        igGetStyle()->FontSizeBase = mse_frontend_imgui_font_size_body();
+    }
 }
 
 void mse_frontend_imgui_process_event(const SDL_Event *event) {

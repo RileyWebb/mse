@@ -1,5 +1,7 @@
 #define DEBUG_LOG_SOURCE "frontend"
 #include "frontend_app.h"
+#include "frontend_logo.h"
+#include "frontend_chrome.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -580,6 +582,11 @@ static SDL_Window *mse_frontend_create_window(const mse_frontend_app_config_t *c
     if (config != NULL && config->high_pixel_density) {
         flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
     }
+    // Decided before the window exists, so it is not drawn once with the
+    // system's frame and then stripped of it.
+    if (mse_frontend_chrome_wants_borderless()) {
+        flags |= SDL_WINDOW_BORDERLESS;
+    }
 
     const char *title = (config != NULL && config->title != NULL) ? config->title : "Multi-System Emulator";
     const int width = (config != NULL && config->width > 0) ? config->width : 1280;
@@ -590,6 +597,12 @@ static SDL_Window *mse_frontend_create_window(const mse_frontend_app_config_t *c
     SDL_Window *window = SDL_CreateWindow(title, scaled_width, scaled_height, flags);
     if (window != NULL) {
         SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+
+        // Set explicitly even on Windows, where the executable carries the icon
+        // as a resource: SDL registers its window class without it, and Linux
+        // has no resource to fall back on at all.
+        mse_frontend_logo_set_window_icon(window);
+        mse_frontend_chrome_attach(window);
     }
 
     return window;
@@ -957,6 +970,8 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
         LIBMSE_PROFILE_START("ui");
         mse_frontend_theme_set_scale(ui_state.content_scale);
         mse_frontend_theme_apply();
+        // After the theme, which writes the ImGui style this sets a field of.
+        mse_frontend_imgui_set_font_scale(ui_state.content_scale);
 
         LIBMSE_PROFILE_START("imgui begin");
         mse_frontend_imgui_begin_frame();
@@ -970,7 +985,10 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
             LIBMSE_PROFILE_START("menus and panels");
             mse_frontend_ui_draw(&ui_state);
             LIBMSE_PROFILE_END();
-        } else if (ui_state.menu_bar_in_game) {
+        } else if (ui_state.menu_bar_in_game || mse_frontend_chrome_active()) {
+            // With custom decoration the bar is also the title bar, the only
+            // thing that moves or closes the window, so a windowed game keeps
+            // it whatever mse_menu_bar_in_game says.
             // Only the bar. Before the emulation view, because ImGui takes the
             // bar's height out of the viewport's work area and the fullscreen
             // picture is sized from that -- the game then sits below the bar
@@ -1028,6 +1046,8 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
             }
         }
         LIBMSE_PROFILE_END(); // "ui"
+
+        mse_frontend_chrome_draw_frame();
 
         LIBMSE_PROFILE_START("imgui render");
         igRender();

@@ -67,9 +67,18 @@ static void mse_frontend_help_markdown_config(void)
 {
 	ImGuiMarkdown_Config_Init(&mdConfig);
 	mdConfig.linkCallback      = Frontend_MD_LinkCallback;
-	mdConfig.headingFormats[0] = (ImGuiMarkdown_HeadingFormat){.font = mse_frontend_imgui_font_title()};
-	mdConfig.headingFormats[1] = (ImGuiMarkdown_HeadingFormat){.font = mse_frontend_imgui_font_body()};
-	mdConfig.headingFormats[2] = (ImGuiMarkdown_HeadingFormat){.font = mse_frontend_imgui_font_body()};
+	// Sizes taken from the font getters rather than fixed, so the headings
+	// follow mse_content_scale with the rest of the text. This runs every time
+	// the modal draws, so a change to the scale lands on the next frame. The
+	// renderer used to push every heading at a hardcoded 16px, which is why
+	// they never scaled at all.
+	const float title = mse_frontend_imgui_font_size_title();
+	const float body  = mse_frontend_imgui_font_size_body();
+
+	mdConfig.headingFormats[0] = (ImGuiMarkdown_HeadingFormat){.font = mse_frontend_imgui_font_title(), .size = title};
+	mdConfig.headingFormats[1] =
+		(ImGuiMarkdown_HeadingFormat){.font = mse_frontend_imgui_font_body(), .size = (title + body) * 0.5f};
+	mdConfig.headingFormats[2] = (ImGuiMarkdown_HeadingFormat){.font = mse_frontend_imgui_font_body(), .size = body};
 }
 
 // `show` is consumed on open, the way the three callers already worked: the
@@ -103,6 +112,13 @@ static void mse_frontend_help_document_modal(const char *popup_id, const char *i
 		const ImVec2 total         = igGetContentRegionAvail();
 		const float  footer_height = mse_frontend_ui_px(58.0f);
 		const float  header_height = mse_frontend_ui_px(84.0f);
+		const float  button_height = mse_frontend_ui_px(32.0f);
+
+		// ImGui leaves ItemSpacing after the header and after the body. The
+		// body used to be sized as though it did not, so both gaps came out of
+		// the footer, which gets whatever height is left: it ended up shorter
+		// than the Close button and cut the bottom of it off.
+		const float stack_gaps = igGetStyle()->ItemSpacing.y * 2.0f;
 
 		// --- header
 		igPushStyleColor_Vec4(ImGuiCol_ChildBg, t->bg_raised);
@@ -138,7 +154,7 @@ static void mse_frontend_help_document_modal(const char *popup_id, const char *i
 		// --- body
 		igPushStyleVar_Vec2(ImGuiStyleVar_WindowPadding,
 							(ImVec2){mse_frontend_ui_px(26.0f), mse_frontend_ui_px(20.0f)});
-		if (igBeginChild_Str("DOC_BODY", (ImVec2){0.0f, total.y - header_height - footer_height},
+		if (igBeginChild_Str("DOC_BODY", (ImVec2){0.0f, total.y - header_height - footer_height - stack_gaps},
 							 ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_None)) {
 			const char *text = mse_frontend_help_load(cache, path);
 			if (text != NULL) {
@@ -156,21 +172,26 @@ static void mse_frontend_help_document_modal(const char *popup_id, const char *i
 		igPushStyleColor_Vec4(ImGuiCol_ChildBg, t->bg_raised);
 		igPushStyleVar_Float(ImGuiStyleVar_ChildRounding, 0.0f);
 		igPushStyleVar_Vec2(ImGuiStyleVar_WindowPadding,
-							(ImVec2){mse_frontend_ui_px(20.0f), mse_frontend_ui_px(11.0f)});
+							(ImVec2){mse_frontend_ui_px(20.0f), (footer_height - button_height) * 0.5f});
 		if (igBeginChild_Str("DOC_FOOTER", ZERO, ImGuiChildFlags_AlwaysUseWindowPadding,
 							 ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
 			const ImVec2 pos = igGetWindowPos();
 			ImDrawList_AddLine(igGetWindowDrawList(), pos, (ImVec2){pos.x + igGetWindowSize().x, pos.y},
 							   igGetColorU32_Vec4(t->border), 1.0f);
 
+			// The version string centred on the button's height rather than
+			// sitting on its top edge.
+			const float row_y = igGetCursorPosY();
+			igSetCursorPosY(row_y + ((button_height - mse_frontend_imgui_font_size_small()) * 0.5f));
 			igPushFont(mse_frontend_imgui_font_small(), mse_frontend_imgui_font_size_small());
 			igTextColored(t->text_faint, "%s", LIBMSE_VERSION_BUILD_STRING);
 			igPopFont();
 
 			igSameLine(0.0f, 0.0f);
+			igSetCursorPosY(row_y);
 			const float button_w = mse_frontend_ui_px(110.0f);
 			igSetCursorPosX(igGetCursorPosX() + igGetContentRegionAvail().x - button_w);
-			if (mse_frontend_ui_button("Close", (ImVec2){button_w, mse_frontend_ui_px(32.0f)},
+			if (mse_frontend_ui_button("Close", (ImVec2){button_w, button_height},
 									   MSE_FRONTEND_UI_BUTTON_SECONDARY)) {
 				igCloseCurrentPopup();
 			}
@@ -200,7 +221,7 @@ void mse_frontend_ui_draw_credits_modal(mse_frontend_ui_state_t *state)
 	if (state == NULL) {
 		return;
 	}
-	mse_frontend_help_document_modal("CREDITS_MSE", MSE_ICON_CAPS, "Credits", "The people and projects behind MSE",
+	mse_frontend_help_document_modal("CREDITS_MSE", MSE_ICON_CREDITS, "Credits", "The people and projects behind MSE",
 									 "CREDITS.md", &credits_markdown, &state->show_credits_window);
 }
 
@@ -209,7 +230,7 @@ void mse_frontend_ui_draw_licence_modal(mse_frontend_ui_state_t *state)
 	if (state == NULL) {
 		return;
 	}
-	mse_frontend_help_document_modal("LICENCE_MSE", MSE_ICON_BIOS, "Licences",
+	mse_frontend_help_document_modal("LICENCE_MSE", MSE_ICON_LICENCE, "Licences",
 									 "MSE and everything it is built on", "LICENCE", &licence_markdown,
 									 &state->show_licence_window);
 }

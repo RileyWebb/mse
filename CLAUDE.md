@@ -61,6 +61,14 @@ The app runs from `bin/`, which is where it looks for backends and data.
 - **`mse_font` picks the typeface** and rebuilds the atlas when it changes; a
   file that will not load falls back rather than leaving no glyphs.
 - **`imgui.ini` lives in the app data directory**, not the install folder.
+- **The window draws its own title bar** (`mse_window_decoration`: 0 system,
+  1 custom; Settings > Appearance). The main menu bar doubles as the title
+  bar, and an SDL hit-test callback in `frontend_chrome.c` tells the platform
+  what drags and what resizes; on Windows the drag area is a real caption, so
+  snapping and double-click-to-maximise are the system's own. Under a tiling
+  window manager (dwm, i3, sway, Hyprland, komorebi, GlazeWM and so on) custom
+  decoration is skipped whatever the setting says. Windows' own `dwm.exe` is
+  the compositor, not suckless dwm: keep the tiler lists per platform.
 - **So does the game library database.** `mse_library_db` overrides the path for
   a portable install; empty means `<appdata>/mse_library.db`. A database left in
   the working directory by an older build is moved across on first run.
@@ -70,6 +78,12 @@ The app runs from `bin/`, which is where it looks for backends and data.
   TLS is the same LibreSSL the rest of the build uses, and certificates verify
   against `data/cert.pem`, which is LibreSSL's own bundle. luasocket and luasec
   are still there for what already uses them. See `libmse/cmake/Curl.cmake`.
+- **The logo is generated, not drawn by hand.** `frontend/tools/gen_logo.py`
+  writes the SVGs and PNGs in `data/logo/` and `packaging/windows/mse.ico` from
+  one set of shapes; the outputs are checked in. `frontend_logo.c` draws the
+  same shapes live in the sidebar and has to be kept in step by hand. Below
+  48px both switch to a simplified drawing, because the full one's teeth and
+  stripes are thinner than a pixel there.
 - **Packaging is `cmake --install --component runtime`.** `bin/` is a working
   directory as much as a build output, so the install rules take the runtime out
   of it and leave the movies, databases and configs behind; the `runtime`

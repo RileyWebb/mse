@@ -32,6 +32,8 @@ set(MSE_FRONTEND_SOURCES
     src/frontend_profiler.c
     src/frontend_screenshot.c
     src/frontend_startup_log.c
+    src/frontend_logo.c
+    src/frontend_chrome.c
 )
 
 add_executable(mse ${MSE_FRONTEND_SOURCES})
@@ -40,6 +42,23 @@ set_target_properties(mse PROPERTIES PREFIX "")
 if(WIN32)
     set(PLATFORM_LIBS mingw32)
     set_target_properties(mse PROPERTIES WIN32_EXECUTABLE TRUE)
+
+    # The executable's own icon: what Explorer, the Start menu, a pinned
+    # taskbar button and the installer's shortcuts show. The running window's
+    # icon is set separately at startup (frontend_logo.c). Configured rather
+    # than written with a relative path, because windres resolves one against
+    # wherever it happens to be run from, not against the .rc file.
+    #
+    # Its own object library, because windres runs the C preprocessor and a
+    # source of mse would inherit every definition mse and its dependencies
+    # carry -- __declspec(dllexport), quoted Windows paths -- and windres's
+    # command line mangles those into "No such file or directory".
+    enable_language(RC)
+    set(MSE_ICON_PATH "${CMAKE_SOURCE_DIR}/packaging/windows/mse.ico")
+    configure_file(mse.rc.in "${CMAKE_CURRENT_BINARY_DIR}/mse.rc" @ONLY)
+    add_library(mse_icon OBJECT "${CMAKE_CURRENT_BINARY_DIR}/mse.rc")
+    set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/mse.rc" PROPERTIES OBJECT_DEPENDS "${MSE_ICON_PATH}")
+    target_sources(mse PRIVATE $<TARGET_OBJECTS:mse_icon>)
 endif()
 
 include(cmake/LuaDeps.cmake)

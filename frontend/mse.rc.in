@@ -1,0 +1,3 @@
+// Generated from frontend/mse.rc.in by CMake. The icon itself comes from
+// frontend/tools/gen_logo.py.
+MSE_ICON ICON "@MSE_ICON_PATH@"
