@@ -5,8 +5,15 @@ name: CMake Build
 on:
   push:
     branches: [ "master" ]
+    # A tag is what cuts a release. The build is the same one master gets; only
+    # the build type and the release job at the bottom key off this.
+    tags: [ "v*" ]
   pull_request:
     branches: [ "master" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 env:
   # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
@@ -54,6 +61,17 @@ jobs:
       uses: egor-tensin/setup-mingw@v3
       with:
         platform: x64
+
+    - name: Install NSIS (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      # Before the CMake configure below on purpose: the 'installer' target is
+      # only created if makensis is found, and find_program caches its answer.
+      run: |
+        if (-not (Get-Command makensis -ErrorAction SilentlyContinue)) {
+          choco install nsis -y --no-progress
+        }
+        "C:\Program Files (x86)\NSIS" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
 
     - name: Install Full Vulkan SDK (Windows)
       if: runner.os == 'Windows'
@@ -106,6 +124,21 @@ jobs:
       run: |
         echo "build-output-dir=${{ github.workspace }}/build" >> "$GITHUB_OUTPUT"
 
+        # One version for the whole project, read from the header the way
+        # cmake/Install.cmake reads it, so the artifact names and the version
+        # the application prints cannot drift apart.
+        version=$(sed -n 's/.*LIBMSE_VERSION_STRING[ \t]*"\([0-9.]*\)".*/\1/p' \
+                  libmse/include/libmse/libmse_version.h)
+        echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+        # Releases ship stripped Release binaries; everything else keeps the
+        # symbols that make a CI failure readable.
+        if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+          echo "build-type=Release" >> "$GITHUB_OUTPUT"
+        else
+          echo "build-type=${{ matrix.build_type }}" >> "$GITHUB_OUTPUT"
+        fi
+
     - name: Setup ccache
       uses: hendrikmuhs/ccache-action@v1.2
       with:
@@ -123,14 +156,72 @@ jobs:
         -DCMAKE_C_COMPILER=${{ matrix.c_compiler }} 
         -DCMAKE_C_COMPILER_LAUNCHER=ccache
         -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-        -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} 
+        -DCMAKE_BUILD_TYPE=${{ steps.strings.outputs.build-type }} 
         -S "${{ github.workspace }}"
 
     - name: Build
-      run: cmake --build ${{ steps.strings.outputs.build-output-dir }} --config ${{ matrix.build_type }}
+      run: cmake --build ${{ steps.strings.outputs.build-output-dir }} --config ${{ steps.strings.outputs.build-type }}
+
+    - name: Package installer (Windows)
+      if: runner.os == 'Windows'
+      run: cmake --build ${{ steps.strings.outputs.build-output-dir }} --target installer
+
+    - name: Package tarball (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      env:
+        BUILD_DIR: ${{ steps.strings.outputs.build-output-dir }}
+        VERSION: ${{ steps.strings.outputs.version }}
+      # The same install tree the Windows installer packages, so the two
+      # platforms ship the same set of files rather than two lists that drift.
+      run: |
+        rm -rf "${BUILD_DIR}/dist"
+        cmake --install "${BUILD_DIR}" --prefix "${BUILD_DIR}/dist/MSE" \
+              --component runtime --strip
+        tar -czf "${BUILD_DIR}/dist/MSE-${VERSION}-linux-x86_64.tar.gz" \
+            -C "${BUILD_DIR}/dist" MSE
+
+    - name: Upload packages
+      uses: actions/upload-artifact@v4
+      with:
+        name: mse-packages-${{ matrix.os }}
+        path: |
+          ${{ steps.strings.outputs.build-output-dir }}/dist/*.exe
+          ${{ steps.strings.outputs.build-output-dir }}/dist/*.tar.gz
+        if-no-files-found: error
       
     - name: Upload
       uses: actions/upload-artifact@v4
       with:
         name: mse-${{ matrix.os }}-${{ matrix.c_compiler }}
         path: ${{ github.workspace }}/bin
+
+  release:
+    # Only on a tag, and only once every platform has produced its package: a
+    # release with half the downloads missing is worse than a late one.
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+    - name: Collect packages
+      uses: actions/download-artifact@v4
+      with:
+        pattern: mse-packages-*
+        path: packages
+        merge-multiple: true
+
+    - name: List what is being released
+      run: ls -la packages
+
+    - name: Publish release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: packages/*
+        # A draft, so the notes can be read and the installer run once before
+        # anybody downloads it. Publishing is then a button in the GitHub UI.
+        draft: true
+        generate_release_notes: true

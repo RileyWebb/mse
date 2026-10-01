@@ -57,6 +57,7 @@ typedef struct {
 } cnes_debug_insn_t;
 
 int      cnes_debug_get_state(cnes_debug_state_t *out);
+uint8_t  cnes_debug_controller(uint32_t port);
 size_t   cnes_debug_read(int space, uint32_t address, uint8_t *dst, size_t len);
 size_t   cnes_debug_space_size(int space);
 int      cnes_debug_write(int space, uint32_t address, uint8_t value);
@@ -67,6 +68,7 @@ uint16_t cnes_debug_disassemble_rewind(uint16_t address, uint32_t count);
 size_t   cnes_debug_render_pattern_table(uint32_t table, uint32_t palette,
                                          uint32_t *out, size_t out_pixels);
 size_t   cnes_debug_render_sprites(uint32_t *out, size_t out_pixels);
+size_t   cnes_debug_render_nametable(uint32_t index, uint32_t *out, size_t out_pixels);
 
 typedef struct {
 	char     code[16];
@@ -87,10 +89,34 @@ int    cnes_cheat_get(size_t index, cnes_cheat_t *out);
 int    cnes_cheat_set_enabled(size_t index, int enabled);
 int    cnes_cheat_remove(size_t index);
 void   cnes_cheat_clear(void);
+
+typedef struct {
+	uint32_t loaded, playing, seeking, ports, pal, _pad;
+	uint64_t frame, total, seek_target;
+	char     path[260];
+	char     rom_filename[128];
+	char     rom_checksum[128];
+} cnes_tas_state_t;
+
+int    cnes_tas_get_state(cnes_tas_state_t *out);
+size_t cnes_tas_read_frames(uint64_t first, uint8_t *out, size_t count);
+size_t cnes_tas_list_movies(char *out, size_t stride, size_t max);
+int    cnes_tas_load(const char *path);
+int    cnes_tas_stop(void);
+int    cnes_tas_restart(void);
+int    cnes_tas_seek(uint64_t frame);
+int    cnes_tas_cancel_seek(void);
+void   cnes_tas_frame_advance(uint32_t frames);
+
+/* The console's transport, from libmse_backend.h. Exported by the same DLL,
+   and plain C either side, so a panel can drive it directly. */
+void     backend_pause(void);
+void     backend_resume(void);
+int      backend_get_state(void);
 void   cnes_cheat_reapply(void);
 ]]
 
-local ABI_VERSION = 5
+local ABI_VERSION = 8
 
 local M = {}
 
@@ -293,12 +319,18 @@ M.PATTERN_DIM    = 128
 M.SPRITE_COLUMNS = 8
 M.SPRITE_WIDTH   = 64
 M.SPRITE_HEIGHT  = 128
+M.NAMETABLE_WIDTH  = 256
+M.NAMETABLE_HEIGHT = 240
 
 -- One buffer per view, reused every frame. These are the largest allocations
 -- the debug scripts make, and remaking them 60 times a second would be the
 -- only garbage this module produces.
 local pattern_pixels = ffi.new("uint32_t[?]", M.PATTERN_DIM * M.PATTERN_DIM)
 local sprite_pixels  = ffi.new("uint32_t[?]", M.SPRITE_WIDTH * M.SPRITE_HEIGHT)
+
+-- One buffer shared by all four nametables: each is rendered and uploaded in
+-- turn, so they never need to exist at the same time.
+local nametable_pixels = ffi.new("uint32_t[?]", M.NAMETABLE_WIDTH * M.NAMETABLE_HEIGHT)
 
 --- Renders pattern table 0 or 1 through palette 0-7 (0-3 background, 4-7
 --- sprite). Returns a uint32_t* of PATTERN_DIM^2 RGBA pixels, or nil.
@@ -320,6 +352,17 @@ function M.render_sprites()
 		return nil
 	end
 	return sprite_pixels
+end
+
+--- Renders nametable 0-3 as it would appear on screen. Returns a uint32_t* of
+--- NAMETABLE_WIDTH*NAMETABLE_HEIGHT RGBA pixels, or nil.
+function M.render_nametable(index)
+	local got = tonumber(lib.cnes_debug_render_nametable(
+		index, nametable_pixels, M.NAMETABLE_WIDTH * M.NAMETABLE_HEIGHT))
+	if got == 0 then
+		return nil
+	end
+	return nametable_pixels
 end
 
 -- Cheats. The list lives in the backend because the emulation thread applies
@@ -367,6 +410,84 @@ end
 function M.cheat_clear()
 	lib.cnes_cheat_clear()
 end
+
+--- The buttons held on a port right now, as a CNES_TAS_BTN_* bitfield. Port is
+--- 0 or 1.
+function M.controller(port)
+	return tonumber(lib.cnes_debug_controller(port or 0))
+end
+
+-- Movie playback. The player is core (cNES/tas.h); this is the locked view of
+-- it, and a seek runs on the emulation thread rather than blocking a draw.
+
+M.TAS_BUTTONS = { "A", "B", "S", "T", "U", "D", "L", "R" }
+
+local tas_state_buf = ffi.new("cnes_tas_state_t[1]")
+
+--- Snapshots movie playback, or nil if there is no console.
+function M.tas_state()
+	if lib.cnes_tas_get_state(tas_state_buf) == 0 then
+		return nil
+	end
+	local s = tas_state_buf[0]
+	return {
+		loaded       = s.loaded ~= 0,
+		playing      = s.playing ~= 0,
+		seeking      = s.seeking ~= 0,
+		ports        = tonumber(s.ports),
+		pal          = s.pal ~= 0,
+		frame        = tonumber(s.frame),
+		total        = tonumber(s.total),
+		seek_target  = tonumber(s.seek_target),
+		path         = ffi.string(s.path),
+		rom_filename = ffi.string(s.rom_filename),
+		rom_checksum = ffi.string(s.rom_checksum),
+	}
+end
+
+-- Sized for the input log window a panel can actually show at once; a movie is
+-- 20k rows and pulling all of them every frame would be pointless work.
+local TAS_ROW_MAX = 256
+local tas_rows    = ffi.new("uint8_t[?]", TAS_ROW_MAX * 2)
+
+--- Reads up to `count` movie rows from `first`. Returns the raw buffer and how
+--- many rows it holds; row i (0-based) is buffer[i*2] and buffer[i*2+1].
+function M.tas_read_frames(first, count)
+	if count > TAS_ROW_MAX then
+		count = TAS_ROW_MAX
+	end
+	local got = tonumber(lib.cnes_tas_read_frames(first, tas_rows, count))
+	return tas_rows, got
+end
+
+local TAS_LIST_MAX    = 64
+local TAS_LIST_STRIDE = 260
+local tas_list_buf    = ffi.new("char[?]", TAS_LIST_MAX * TAS_LIST_STRIDE)
+
+--- Lists the .fm2 files next to the executable, as a table of names.
+function M.tas_list_movies()
+	local got = tonumber(lib.cnes_tas_list_movies(tas_list_buf, TAS_LIST_STRIDE, TAS_LIST_MAX))
+	local names = {}
+	for i = 0, got - 1 do
+		names[i + 1] = ffi.string(tas_list_buf + i * TAS_LIST_STRIDE)
+	end
+	return names
+end
+
+function M.tas_load(path)    return lib.cnes_tas_load(path) ~= 0 end
+function M.tas_stop()        return lib.cnes_tas_stop() ~= 0 end
+function M.tas_restart()     return lib.cnes_tas_restart() ~= 0 end
+function M.tas_seek(frame)   return lib.cnes_tas_seek(frame) ~= 0 end
+function M.tas_cancel_seek() return lib.cnes_tas_cancel_seek() ~= 0 end
+function M.tas_frame_advance(frames) lib.cnes_tas_frame_advance(frames or 1) end
+
+M.STATE_STOPPED = 0
+M.STATE_RUNNING = 1
+M.STATE_PAUSED  = 2
+
+function M.backend_state()  return tonumber(lib.backend_get_state()) end
+function M.backend_pause()  lib.backend_pause() end
+function M.backend_resume() lib.backend_resume() end
 
 --- Decodes the CPU status byte into the conventional NV-BDIZC string.
 function M.flags_string(status)

@@ -7,18 +7,23 @@
 #include "frontend_ui.h"
 #include "frontend_imgui.h"
 #include "frontend_cimgui.h"
+#include "frontend_widgets.h"
 #include "libmse/libmse_cvar.h"
 #include "libmse/libmse_cmd.h"
 #include "libmse/libmse_debug.h"
 #include "frontend_app.h"
 
-#define COLOR_ERROR (ImVec4){0.95f, 0.35f, 0.35f, 1.0f}
-#define COLOR_SUCCESS (ImVec4){0.52f, 0.95f, 0.52f, 1.0f}
-#define COLOR_INFO (ImVec4){0.62f, 0.52f, 0.96f, 1.0f}
-#define COLOR_ECHO (ImVec4){0.74f, 0.74f, 0.78f, 1.0f}
-#define COLOR_MATCH (ImVec4){0.80f, 0.80f, 0.80f, 1.0f}
-#define COLOR_TEXT (ImVec4){0.75f, 0.75f, 0.78f, 1.0f}
-#define COLOR_BG (ImVec4){0.0745098039f, 0.0745098039f, 0.0745098039f, 1.0f}
+// Taken from the theme so the console tracks whatever palette is in force.
+// These are read where a line is written, not where it is drawn, so an old
+// line keeps the colour it was logged under -- which is what you want when
+// scrolling back through a session.
+#define COLOR_ERROR   (mse_frontend_theme()->danger)
+#define COLOR_SUCCESS (mse_frontend_theme()->success)
+#define COLOR_INFO    (mse_frontend_theme()->accent)
+#define COLOR_ECHO    (mse_frontend_theme()->text_muted)
+#define COLOR_MATCH   (mse_frontend_theme()->text)
+#define COLOR_TEXT    (mse_frontend_theme()->text_muted)
+#define COLOR_BG      (mse_frontend_theme()->bg_base)
 
 #define MAX_TERMINAL_HISTORY 512
 #define MAX_COMMAND_HISTORY 64
@@ -42,19 +47,33 @@ typedef struct {
 
 #define MAX_SUGGESTIONS       32
 #define SUGGESTION_NAME_MAX   64
+#define SUGGESTION_USAGE_MAX  96
 #define SUGGESTION_DETAIL_MAX 128
 #define SUGGESTION_VISIBLE    8 // rows on screen before the list scrolls
 
+typedef enum {
+    SUGGESTION_CMD = 0,
+    SUGGESTION_CVAR,
+    SUGGESTION_ALIAS
+} TerminalSuggestionKind;
+
 typedef struct {
     char name[SUGGESTION_NAME_MAX];
+    // For a command, the arguments it takes; for a cvar, its current value;
+    // for an alias, what it expands to. The thing you need to see before you
+    // press enter, in other words.
+    char usage[SUGGESTION_USAGE_MAX];
     char detail[SUGGESTION_DETAIL_MAX];
-    bool is_cvar;
+    TerminalSuggestionKind kind;
 } TerminalSuggestion;
 
 static TerminalSuggestion g_suggestions[MAX_SUGGESTIONS];
 static int                g_suggestion_count = 0;
 static int                g_suggestion_index = 0;
 static int                g_suggestion_total = 0; // matches found, may exceed the array
+// How much of each name the user has already typed, so the list can show what
+// completing would add rather than repeating what is already in the input.
+static int                g_suggestion_prefix_len = 0;
 static bool               g_suggestions_dirty = true;
 
 // Set when a row is clicked; applied inside the input's callback, which is the
@@ -239,11 +258,48 @@ static void terminal_push_command_history(const char *cmd)
     g_command_history_count++;
 }
 
+// Long lines -- a path, a listvars row, an error with a file in it -- are the
+// ones worth reading, and they are exactly the ones that run off the side.
+// Wrapping is on for that reason; turning it off gives a horizontal scrollbar
+// and one row per line, which is what you want when the output is a table.
+LIBMSE_CVAR_DEFINE_INT(g_cv_terminal_wrap, "mse_terminal_wrap", 1,
+                       "Wrap long console lines instead of scrolling sideways (0 = No, 1 = Yes)");
+
 static bool cmd_clear_handler(int argc, const char** argv)
 {
     g_history_head = 0;
     g_history_size = 0;
     return true;
+}
+
+// The whole buffer as one blob. Clicking a row copies that row, which is right
+// for reading one value back and useless for pasting a session somewhere.
+static void terminal_copy_all(void)
+{
+    if (g_history_size == 0) return;
+
+    size_t       needed    = 1;
+    const size_t start_idx = (g_history_head + MAX_TERMINAL_HISTORY - g_history_size) % MAX_TERMINAL_HISTORY;
+
+    for (size_t i = 0; i < g_history_size; i++) {
+        needed += strlen(g_terminal_history[(start_idx + i) % MAX_TERMINAL_HISTORY].text) + 1;
+    }
+
+    char *blob = (char *)malloc(needed);
+    if (blob == NULL) return;
+
+    size_t written = 0;
+    for (size_t i = 0; i < g_history_size; i++) {
+        const char  *line = g_terminal_history[(start_idx + i) % MAX_TERMINAL_HISTORY].text;
+        const size_t len  = strlen(line);
+        memcpy(blob + written, line, len);
+        written += len;
+        blob[written++] = '\n';
+    }
+    blob[written] = '\0';
+
+    igSetClipboardText(blob);
+    free(blob);
 }
 
 static bool cmd_exit_handler(int argc, const char** argv)
@@ -301,7 +357,8 @@ static bool terminal_prefix_match(const char *name, const char *prefix, int pref
 // Inserts in alphabetical order, dropping anything past the array. Sorted on
 // the way in because the registries hand these over in registration order,
 // which is meaningless to read.
-static void terminal_add_suggestion(const char *name, const char *detail, bool is_cvar)
+static void terminal_add_suggestion(const char *name, const char *usage, const char *detail,
+                                    TerminalSuggestionKind kind)
 {
     g_suggestion_total++;
 
@@ -321,8 +378,9 @@ static void terminal_add_suggestion(const char *name, const char *detail, bool i
 
     TerminalSuggestion *slot = &g_suggestions[position];
     snprintf(slot->name, sizeof(slot->name), "%s", name);
+    snprintf(slot->usage, sizeof(slot->usage), "%s", usage ? usage : "");
     snprintf(slot->detail, sizeof(slot->detail), "%s", detail ? detail : "");
-    slot->is_cvar = is_cvar;
+    slot->kind = kind;
 
     if (g_suggestion_count < MAX_SUGGESTIONS) {
         g_suggestion_count++;
@@ -341,35 +399,30 @@ static void autocomplete_cvar_callback(libmse_cvar_t *cvar, void *user_data)
         return;
     }
 
-    // The current value leads the description: when you are completing a cvar
-    // you are usually about to change it, and what it is now is the thing you
-    // wanted to know.
-    char detail[SUGGESTION_DETAIL_MAX];
+    // The current value stands in for a usage line: when you are completing a
+    // cvar you are usually about to change it, and what it is now is the thing
+    // you wanted to know.
+    char usage[SUGGESTION_USAGE_MAX];
     switch (cvar->type) {
         case LIBMSE_CVAR_INT:
-            snprintf(detail, sizeof(detail), "= %d", cvar->data.i ? *cvar->data.i : 0);
+            snprintf(usage, sizeof(usage), "= %d", cvar->data.i ? *cvar->data.i : 0);
             break;
         case LIBMSE_CVAR_FLOAT:
-            snprintf(detail, sizeof(detail), "= %.3f", cvar->data.f ? *cvar->data.f : 0.0f);
+            snprintf(usage, sizeof(usage), "= %.3f", cvar->data.f ? *cvar->data.f : 0.0f);
             break;
         case LIBMSE_CVAR_DOUBLE:
-            snprintf(detail, sizeof(detail), "= %.3f", cvar->data.d ? *cvar->data.d : 0.0);
+            snprintf(usage, sizeof(usage), "= %.3f", cvar->data.d ? *cvar->data.d : 0.0);
             break;
         case LIBMSE_CVAR_STRING:
-            snprintf(detail, sizeof(detail), "= \"%s\"",
+            snprintf(usage, sizeof(usage), "= \"%s\"",
                      (cvar->data.s && *cvar->data.s) ? *cvar->data.s : "");
             break;
         default:
-            detail[0] = '\0';
+            usage[0] = '\0';
             break;
     }
 
-    if (cvar->description != NULL && cvar->description[0] != '\0') {
-        const size_t used = strlen(detail);
-        snprintf(detail + used, sizeof(detail) - used, "   %s", cvar->description);
-    }
-
-    terminal_add_suggestion(cvar->name, detail, true);
+    terminal_add_suggestion(cvar->name, usage, cvar->description, SUGGESTION_CVAR);
 }
 
 static void autocomplete_cmd_callback(const libmse_cmd_t *cmd, void *user_data)
@@ -379,7 +432,34 @@ static void autocomplete_cmd_callback(const libmse_cmd_t *cmd, void *user_data)
         return;
     }
 
-    terminal_add_suggestion(cmd->name, cmd->description, false);
+    // A command that never declared its usage still shows its shape, so the
+    // required argument count is not a surprise at the point of pressing enter.
+    char usage[SUGGESTION_USAGE_MAX];
+    if (cmd->usage != NULL && cmd->usage[0] != '\0') {
+        snprintf(usage, sizeof(usage), "%s", cmd->usage);
+    } else {
+        usage[0] = '\0';
+        size_t used = 0;
+        for (size_t i = 0; i < cmd->expected_args_count && used < sizeof(usage); i++) {
+            const int n = snprintf(usage + used, sizeof(usage) - used, i == 0 ? "<arg%zu>" : " <arg%zu>", i + 1);
+            if (n < 0) break;
+            used += (size_t)n;
+        }
+    }
+
+    terminal_add_suggestion(cmd->name, usage, cmd->description, SUGGESTION_CMD);
+}
+
+static void autocomplete_alias_callback(const libmse_alias_t *alias, void *user_data)
+{
+    AutocompleteState *state = (AutocompleteState *)user_data;
+    if (alias->name == NULL || !terminal_prefix_match(alias->name, state->prefix, state->prefix_len)) {
+        return;
+    }
+
+    char usage[SUGGESTION_USAGE_MAX];
+    snprintf(usage, sizeof(usage), "-> %s", alias->cmd ? alias->cmd : "");
+    terminal_add_suggestion(alias->name, usage, "", SUGGESTION_ALIAS);
 }
 
 static void terminal_rebuild_suggestions(const char *buffer)
@@ -389,6 +469,7 @@ static void terminal_rebuild_suggestions(const char *buffer)
 
     int       word_start = 0;
     const int word_len   = terminal_completion_word(buffer, &word_start);
+    g_suggestion_prefix_len = (word_len > 0) ? word_len : 0;
     if (word_len <= 0) {
         g_suggestion_index = 0;
         return;
@@ -397,6 +478,7 @@ static void terminal_rebuild_suggestions(const char *buffer)
     AutocompleteState state = {buffer + word_start, word_len};
     libmse_cmd_iterate(autocomplete_cmd_callback, &state);
     libmse_cvar_iterate(autocomplete_cvar_callback, &state);
+    libmse_alias_iterate(autocomplete_alias_callback, &state);
 
     if (g_suggestion_index >= g_suggestion_count) {
         g_suggestion_index = 0;
@@ -500,6 +582,30 @@ static int terminal_input_callback(ImGuiInputTextCallbackData *data)
 // Drawn as a window of its own rather than a child of the console so it can
 // overflow the console's bounds, and with NoFocusOnAppearing so that opening
 // it does not take the keyboard away from the input it is attached to.
+static const char *terminal_kind_label(TerminalSuggestionKind kind)
+{
+    switch (kind) {
+        case SUGGESTION_CVAR:  return "cvar";
+        case SUGGESTION_ALIAS: return "alias";
+        case SUGGESTION_CMD:
+        default:               return "cmd";
+    }
+}
+
+static ImVec4 terminal_kind_colour(TerminalSuggestionKind kind)
+{
+    switch (kind) {
+        case SUGGESTION_CVAR:  return mse_frontend_theme()->info;
+        case SUGGESTION_ALIAS: return mse_frontend_theme()->warning;
+        case SUGGESTION_CMD:
+        default:               return mse_frontend_theme()->success;
+    }
+}
+
+// The row SetScrollHereY was last called for. Kept so a selection that has not
+// moved does not re-centre itself every frame.
+static int g_suggestion_scrolled_to = -1;
+
 static void terminal_draw_suggestions(void)
 {
     if (g_suggestion_count == 0 || (!g_input_active && !g_list_hovered)) {
@@ -517,56 +623,153 @@ static void terminal_draw_suggestions(void)
         height += line_height;
     }
 
+    // The kind reads as a coloured chip rather than as a word in the middle of
+    // the row: it is the one field that is the same handful of values every
+    // time, so it wants to be recognised rather than read.
+    const float chip_pad = mse_frontend_ui_px(5.0f);
+
+    // Columns are measured from the entries actually on screen, so a list of
+    // short cvar names does not leave a canyon before the descriptions and a
+    // long usage string is not written over the one next to it.
+    const float gap        = mse_frontend_ui_px(14.0f);
+    const float indent     = mse_frontend_ui_px(8.0f);
+    float       name_w     = 0.0f;
+    float       kind_w     = 0.0f;
+    float       usage_w    = 0.0f;
+    float       detail_w   = 0.0f;
+    for (int i = 0; i < g_suggestion_count; i++) {
+        const TerminalSuggestion *sg = &g_suggestions[i];
+        const float n = igCalcTextSize(sg->name, NULL, false, 0.0f).x;
+        const float k = igCalcTextSize(terminal_kind_label(sg->kind), NULL, false, 0.0f).x;
+        const float u = igCalcTextSize(sg->usage, NULL, false, 0.0f).x;
+        const float d = igCalcTextSize(sg->detail, NULL, false, 0.0f).x;
+        if (n > name_w) name_w = n;
+        if (k > kind_w) kind_w = k;
+        if (u > usage_w) usage_w = u;
+        if (d > detail_w) detail_w = d;
+    }
+
+    const float kind_column   = indent + name_w + gap;
+    const float usage_column  = kind_column + kind_w + (chip_pad * 2.0f) + gap;
+    const float detail_column = usage_column + usage_w + gap;
+
+    const float input_width = g_input_max.x - g_input_min.x;
+    float       width       = detail_column + detail_w + indent + igGetStyle()->ScrollbarSize;
+    if (width < input_width) {
+        width = input_width;
+    }
+    // Never wider than the space to the right of the input, or the list hangs
+    // off the edge of the window it belongs to.
+    const ImGuiViewport *viewport   = igGetMainViewport();
+    const float          right_edge = viewport->WorkPos.x + viewport->WorkSize.x - mse_frontend_ui_px(8.0f);
+    if (g_input_min.x + width > right_edge) {
+        width = right_edge - g_input_min.x;
+    }
+
     igSetNextWindowPos((ImVec2){g_input_min.x, g_input_max.y + mse_frontend_ui_px(2.0f)}, ImGuiCond_Always,
                        (ImVec2){0.0f, 0.0f});
-    igSetNextWindowSize((ImVec2){g_input_max.x - g_input_min.x, height}, ImGuiCond_Always);
+    igSetNextWindowSize((ImVec2){width, height}, ImGuiCond_Always);
 
     const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                                    ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
                                    ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoDocking;
 
-    igPushStyleColor_Vec4(ImGuiCol_WindowBg, (ImVec4){0.10f, 0.09f, 0.14f, 0.98f});
-    igPushStyleColor_Vec4(ImGuiCol_Border, (ImVec4){0.42f, 0.30f, 0.68f, 0.60f});
+    igPushStyleColor_Vec4(ImGuiCol_WindowBg, mse_frontend_theme()->bg_overlay);
+    igPushStyleColor_Vec4(ImGuiCol_Border, mse_frontend_theme_alpha(mse_frontend_theme()->accent, 0.45f));
     igPushStyleVar_Float(ImGuiStyleVar_WindowBorderSize, mse_frontend_ui_px(1.0f));
     igPushStyleVar_Float(ImGuiStyleVar_WindowRounding, mse_frontend_ui_px(6.0f));
 
     if (igBegin("##MSE_CONSOLE_SUGGESTIONS", NULL, flags)) {
         g_list_hovered = igIsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
 
-        const float name_column = mse_frontend_ui_px(190.0f);
+        // The list is a sibling of the console, and typing in the console
+        // focuses it, which puts it in front of everything unfocused -- this
+        // list included. Push the list to the front of the draw order every
+        // frame instead, which leaves focus where the input needs it.
+        igBringWindowToDisplayFront(igGetCurrentWindow());
+
+        // Selectable sizes itself to the content region, which the window
+        // padding insets on both sides, so the highlight stopped short of the
+        // edges and read as a box rather than as a row. Measure the full width
+        // once and start each row at the window's own left edge.
+        const float pad_x = igGetStyle()->WindowPadding.x;
+        const float row_w = igGetContentRegionAvail().x + (pad_x * 2.0f);
 
         for (int i = 0; i < g_suggestion_count; i++) {
             const TerminalSuggestion *suggestion = &g_suggestions[i];
 
             igPushID_Int(i);
+            igSetCursorPosX(0.0f);
             if (igSelectable_Bool("##row", i == g_suggestion_index,
-                                  ImGuiSelectableFlags_AllowOverlap, (ImVec2){0.0f, 0.0f})) {
+                                  ImGuiSelectableFlags_AllowOverlap, (ImVec2){row_w, 0.0f})) {
                 g_suggestion_index = i;
                 g_apply_completion = true;
                 g_refocus_input    = true;
             }
 
             // Keeps the highlighted row on screen while the arrows move it.
-            if (i == g_suggestion_index && igIsWindowAppearing()) {
+            // Only when the selection actually moved: scrolling every frame
+            // would fight the mouse wheel, and only on appearing -- which is
+            // what this used to do -- meant the arrows walked the highlight
+            // straight off the bottom of the list.
+            if (i == g_suggestion_index && g_suggestion_index != g_suggestion_scrolled_to) {
                 igSetScrollHereY(0.5f);
+                g_suggestion_scrolled_to = g_suggestion_index;
             }
 
-            igSameLine(mse_frontend_ui_px(6.0f), 0.0f);
-            igTextColored(suggestion->is_cvar ? (ImVec4){0.62f, 0.82f, 1.0f, 1.0f} : COLOR_SUCCESS, "%s",
-                          suggestion->name);
+            const bool current = (i == g_suggestion_index);
 
-            igSameLine(name_column, 0.0f);
-            igTextColored((ImVec4){0.50f, 0.50f, 0.55f, 1.0f}, "%s", suggestion->is_cvar ? "cvar" : "cmd");
+            // The matched prefix in the accent, the rest in the kind's colour:
+            // what you typed and what completing it would add, in one word.
+            igSameLine(indent, 0.0f);
+            if (g_suggestion_prefix_len > 0 &&
+                (int)strlen(suggestion->name) >= g_suggestion_prefix_len) {
+                char head[64];
+                const int head_len = (g_suggestion_prefix_len < (int)sizeof(head) - 1)
+                                         ? g_suggestion_prefix_len
+                                         : (int)sizeof(head) - 1;
+                memcpy(head, suggestion->name, (size_t)head_len);
+                head[head_len] = '\0';
+
+                igTextColored(mse_frontend_theme()->accent, "%s", head);
+                igSameLine(0.0f, 0.0f);
+                igTextColored(terminal_kind_colour(suggestion->kind), "%s", suggestion->name + head_len);
+            } else {
+                igTextColored(terminal_kind_colour(suggestion->kind), "%s", suggestion->name);
+            }
+
+            // The kind as a filled chip in its own colour.
+            {
+                const char  *label  = terminal_kind_label(suggestion->kind);
+                const ImVec4 colour = terminal_kind_colour(suggestion->kind);
+
+                igSameLine(kind_column, 0.0f);
+                const ImVec2 at     = igGetCursorScreenPos();
+                const ImVec2 extent = igCalcTextSize(label, NULL, false, 0.0f);
+
+                ImDrawList_AddRectFilled(igGetWindowDrawList(),
+                                         (ImVec2){at.x - chip_pad, at.y},
+                                         (ImVec2){at.x + extent.x + chip_pad, at.y + extent.y},
+                                         mse_frontend_theme_u32(colour, current ? 0.30f : 0.18f),
+                                         mse_frontend_ui_px(4.0f), 0);
+                igTextColored(mse_frontend_theme_alpha(colour, current ? 1.0f : 0.85f), "%s", label);
+            }
+
+            if (suggestion->usage[0] != '\0') {
+                igSameLine(usage_column, 0.0f);
+                igTextColored(COLOR_MATCH, "%s", suggestion->usage);
+            }
 
             if (suggestion->detail[0] != '\0') {
-                igSameLine(name_column + mse_frontend_ui_px(42.0f), 0.0f);
-                igTextColored(COLOR_MATCH, "%s", suggestion->detail);
+                igSameLine(detail_column, 0.0f);
+                igTextColored(current ? mse_frontend_theme()->text : mse_frontend_theme()->text_muted, "%s",
+                              suggestion->detail);
             }
             igPopID();
         }
 
         if (truncated) {
-            igTextColored((ImVec4){0.50f, 0.50f, 0.55f, 1.0f}, "  ... %d more",
+            igTextColored(mse_frontend_theme()->text_faint, "  %d more, keep typing to narrow",
                           g_suggestion_total - g_suggestion_count);
         }
     } else {
@@ -593,14 +796,14 @@ void mse_frontend_ui_draw_terminal(mse_frontend_ui_state_t *state)
     igPushStyleVar_Vec2(ImGuiStyleVar_WindowPadding, (ImVec2){mse_frontend_ui_px(8.0f), mse_frontend_ui_px(8.0f)});
 
     igPushStyleColor_Vec4(ImGuiCol_WindowBg, COLOR_BG);
-    igPushStyleColor_Vec4(ImGuiCol_Border, (ImVec4){0.42f, 0.30f, 0.68f, 0.42f});
-    igPushStyleColor_Vec4(ImGuiCol_TitleBg, (ImVec4){0.16f, 0.12f, 0.28f, 1.0f});
-    igPushStyleColor_Vec4(ImGuiCol_TitleBgActive, (ImVec4){0.22f, 0.15f, 0.42f, 1.0f});
+    igPushStyleColor_Vec4(ImGuiCol_Border, mse_frontend_theme()->border);
+    igPushStyleColor_Vec4(ImGuiCol_TitleBg, mse_frontend_theme()->bg_raised);
+    igPushStyleColor_Vec4(ImGuiCol_TitleBgActive, mse_frontend_theme()->bg_raised);
 
     igSetNextWindowSize((ImVec2){mse_frontend_ui_px(520.0f), mse_frontend_ui_px(360.0f)}, ImGuiCond_FirstUseEver);
 
     bool terminal_open = state->show_terminal != 0;
-    const bool terminal_visible = igBegin("MSE_CONSOLE", &terminal_open,
+    const bool terminal_visible = igBegin("Console###MSE_CONSOLE", &terminal_open,
                                           ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse);
     state->show_terminal = terminal_open ? 1 : 0;
 
@@ -608,26 +811,55 @@ void mse_frontend_ui_draw_terminal(mse_frontend_ui_state_t *state)
 
         float footer_height_to_reserve = igGetStyle()->ItemSpacing.y + igGetFrameHeightWithSpacing();
 
+        const bool wrap = *g_cv_terminal_wrap != 0;
+
+        // No horizontal scrollbar while wrapping: there is nothing to scroll to,
+        // and leaving it on reserves room for a bar that never appears.
+        const ImGuiWindowFlags scroll_flags = wrap ? ImGuiWindowFlags_None : ImGuiWindowFlags_HorizontalScrollbar;
+
         if (igBeginChild_Str("TerminalScrollingRegion", (ImVec2){0, -footer_height_to_reserve}, ImGuiChildFlags_None,
-                             ImGuiWindowFlags_HorizontalScrollbar)) {
+                             scroll_flags)) {
             igPushStyleVar_Vec2(ImGuiStyleVar_ItemSpacing, (ImVec2){4, 1});
             size_t start_idx = (g_history_head + MAX_TERMINAL_HISTORY - g_history_size) % MAX_TERMINAL_HISTORY;
 
+            const float wrap_width = igGetContentRegionAvail().x;
+
             for (size_t i = 0; i < g_history_size; i++) {
-                size_t idx = (start_idx + i) % MAX_TERMINAL_HISTORY;
+                size_t      idx  = (start_idx + i) % MAX_TERMINAL_HISTORY;
+                const char *text = g_terminal_history[idx].text;
 
                 igPushID_Int((int)i);
                 igPushStyleColor_Vec4(ImGuiCol_Text, g_terminal_history[idx].color);
-                
-                // Stripping ANSI earlier ensures `text` is rendered without stray brackets
-                // and copies perfectly cleanly to the clipboard.
-                if (igSelectable_Bool(g_terminal_history[idx].text, false, ImGuiSelectableFlags_NoAutoClosePopups,
-                                      (ImVec2){0, 0})) {
-                    igSetClipboardText(g_terminal_history[idx].text);
-                }
-                igPopStyleColor(1);
 
-                if (igIsItemHovered(ImGuiHoveredFlags_None)) igSetTooltip("Click to copy row to clipboard");
+                // Stripping ANSI earlier ensures `text` is rendered without stray
+                // brackets and copies perfectly cleanly to the clipboard.
+                bool clicked;
+                if (wrap) {
+                    // A selectable cannot wrap its own label, so it is drawn as a
+                    // blank one tall enough for the wrapped text and the text is
+                    // written back over it. Measuring first is what keeps the row
+                    // and its highlight the same height.
+                    const ImVec2 extent = igCalcTextSize(text, NULL, false, wrap_width);
+
+                    const ImVec2 origin = igGetCursorScreenPos();
+                    clicked = igSelectable_Bool("##row", false, ImGuiSelectableFlags_NoAutoClosePopups,
+                                                (ImVec2){0, extent.y});
+                    const bool hovered = igIsItemHovered(ImGuiHoveredFlags_None);
+
+                    igSetCursorScreenPos(origin);
+                    igPushTextWrapPos(igGetCursorPosX() + wrap_width);
+                    igTextUnformatted(text, NULL);
+                    igPopTextWrapPos();
+
+                    if (hovered) igSetTooltip("Click to copy row to clipboard");
+                } else {
+                    clicked = igSelectable_Bool(text, false, ImGuiSelectableFlags_NoAutoClosePopups, (ImVec2){0, 0});
+                    if (igIsItemHovered(ImGuiHoveredFlags_None)) igSetTooltip("Click to copy row to clipboard");
+                }
+
+                if (clicked) igSetClipboardText(text);
+
+                igPopStyleColor(1);
                 igPopID();
             }
 
@@ -636,6 +868,20 @@ void mse_frontend_ui_draw_terminal(mse_frontend_ui_state_t *state)
                 g_scroll_to_bottom = false;
             }
             igPopStyleVar(1);
+
+            // Right-click rather than a control in the footer: the footer is the
+            // input, and shrinking that to make room for a checkbox would cost
+            // more than the checkbox is worth.
+            if (igBeginPopupContextWindow("##ConsoleMenu", ImGuiPopupFlags_MouseButtonRight)) {
+                bool wrap_toggle = *g_cv_terminal_wrap != 0;
+                if (igMenuItem_BoolPtr("Wrap lines", NULL, &wrap_toggle, true)) {
+                    libmse_cvar_set_i("mse_terminal_wrap", wrap_toggle ? 1 : 0);
+                }
+                igSeparator();
+                if (igMenuItem_Bool("Copy all", NULL, false, g_history_size > 0)) terminal_copy_all();
+                if (igMenuItem_Bool("Clear", NULL, false, g_history_size > 0)) cmd_clear_handler(0, NULL);
+                igEndPopup();
+            }
         }
         igEndChild();
 

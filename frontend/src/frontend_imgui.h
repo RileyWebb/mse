@@ -36,6 +36,11 @@ float mse_frontend_imgui_font_size_small(void);
 float mse_frontend_imgui_font_size_body(void);
 float mse_frontend_imgui_font_size_title(void);
 float mse_frontend_imgui_font_size_icon(void);
+
+// The interface scale the font sizes above are multiplied by. Set every frame
+// from mse_content_scale, so a change to it resizes the text along with
+// everything else rather than after a restart.
+void mse_frontend_imgui_set_font_scale(float scale);
 void mse_frontend_imgui_process_event(const SDL_Event *event);
 void mse_frontend_imgui_begin_frame(void);
 void mse_frontend_imgui_prepare_draw_data(SDL_GPUCommandBuffer *command_buffer);

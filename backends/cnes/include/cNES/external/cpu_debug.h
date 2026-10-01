@@ -33,7 +33,7 @@ extern "C" {
 	#endif
 #endif
 
-#define CNES_DEBUG_ABI_VERSION 5u
+#define CNES_DEBUG_ABI_VERSION 8u
 
 // Address spaces that can be read in bulk.
 typedef enum cnes_debug_space_e {
@@ -83,6 +83,12 @@ typedef struct cnes_debug_state_s {
 // running or out is NULL. Cheap enough to call once per UI frame.
 CNES_DEBUG_API int cnes_debug_get_state(cnes_debug_state_t *out);
 
+// The buttons held on `port` (0 or 1) right now, in the order the controller
+// shifts them out: bit 0 A, bit 1 B, bit 2 Select, bit 3 Start, then Up, Down,
+// Left, Right. The same byte an FM2 row decodes to, so a live pad and a movie
+// row can be drawn by the same code.
+CNES_DEBUG_API uint8_t cnes_debug_controller(uint32_t port);
+
 // Copies len bytes from an address space into dst, under the same lock.
 // Returns the number of bytes actually copied, which is short at the end of a
 // space and zero for an unknown one. Reads are side-effect free: ports that
@@ -95,6 +101,12 @@ CNES_DEBUG_API size_t cnes_debug_space_size(cnes_debug_space_t space);
 
 // Writes a single byte into an address space. Returns non-zero on success.
 // Intended for poking values from a memory viewer.
+//
+// Only the parts that are plain memory can be written: internal RAM, OAM,
+// palette, and nametable RAM through the PPU space. Registers and pattern
+// memory are refused -- writing a register would fire the side effects this
+// API exists to avoid, and whether CHR is writable at all is the mapper's
+// business.
 CNES_DEBUG_API int cnes_debug_write(cnes_debug_space_t space, uint32_t address, uint8_t value);
 
 // Disassembles one instruction at address, writing text into buf. Returns the

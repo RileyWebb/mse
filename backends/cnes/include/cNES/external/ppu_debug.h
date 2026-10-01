@@ -31,6 +31,24 @@ extern "C" {
 CNES_DEBUG_API size_t cnes_debug_render_pattern_table(uint32_t table, uint32_t palette,
                                                       uint32_t *out, size_t out_pixels);
 
+// A nametable is 32x30 tiles of 8x8 pixels: one screen.
+#define CNES_DEBUG_NAMETABLE_WIDTH  256
+#define CNES_DEBUG_NAMETABLE_HEIGHT 240
+
+// Renders nametable `index` (0-3, before mirroring is applied) into `out`,
+// which must hold at least CNES_DEBUG_NAMETABLE_WIDTH *
+// CNES_DEBUG_NAMETABLE_HEIGHT pixels.
+//
+// Drawn the way the PPU would draw it: the background pattern table PPUCTRL
+// currently selects, and the palette each tile's attribute byte picks. Scroll
+// is not applied -- this is the map, not the view onto it.
+//
+// The index is the raw one, so with horizontal or vertical mirroring two of
+// the four come back identical. That is worth seeing rather than hiding.
+//
+// Returns the number of pixels written, or 0 if there is nothing to draw.
+CNES_DEBUG_API size_t cnes_debug_render_nametable(uint32_t index, uint32_t *out, size_t out_pixels);
+
 // Renders all 64 OAM entries into `out`, which must hold at least
 // CNES_DEBUG_SPRITE_WIDTH * CNES_DEBUG_SPRITE_HEIGHT pixels.
 //

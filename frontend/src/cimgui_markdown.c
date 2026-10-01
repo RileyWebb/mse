@@ -51,6 +51,7 @@ void ImGuiMarkdown_Config_Init(ImGuiMarkdown_Config *config)
 	config->linkIcon		= ""; // Default empty
 	for (int i = 0; i < IMGUI_MARKDOWN_NUM_HEADINGS; ++i) {
 		config->headingFormats[i].font		= NULL;
+		config->headingFormats[i].size		= 0.0f;
 		config->headingFormats[i].separator = true; // Default from original
 	}
 	// Ensure H3 by default doesn't have a separator to match original example setup more closely
@@ -125,13 +126,17 @@ void ImGuiMarkdown_TextRegion_Init(ImGuiMarkdown_TextRegion *region)
 	region->indentX = 0.0f;
 }
 
+// Every wrap point in this file is measured at igGetFontSize(), the size the
+// text is about to be drawn at. It used to be the font's LegacySize -- the size
+// it was loaded at -- which is only the drawn size at the scale the app started
+// with: smaller and the lines broke early, larger and they ran off the edge.
 void ImGuiMarkdown_TextRegion_RenderTextWrapped(ImGuiMarkdown_TextRegion *region, const char *text,
 												const char *text_end, bool bIndentToHere)
 {
 	ImVec2 contentRegionAvail = igGetContentRegionAvail();
 	float  widthLeft		  = contentRegionAvail.x;
 
-	const char *endLine = ImFont_CalcWordWrapPosition(igGetFont(), igGetFont()->LegacySize, text, text_end, widthLeft);
+	const char *endLine = ImFont_CalcWordWrapPosition(igGetFont(), igGetFontSize(), text, text_end, widthLeft);
 	igTextUnformatted(text, endLine);
 
 	if (bIndentToHere) {
@@ -151,7 +156,7 @@ void ImGuiMarkdown_TextRegion_RenderTextWrapped(ImGuiMarkdown_TextRegion *region
 		if (*text == ' ') {
 			++text;
 		}
-		endLine = ImFont_CalcWordWrapPosition(igGetFont(), igGetFont()->LegacySize, text, text_end, widthLeft);
+		endLine = ImFont_CalcWordWrapPosition(igGetFont(), igGetFontSize(), text, text_end, widthLeft);
 		if (text == endLine && endLine < text_end) { // Avoid infinite loop on single char that cannot fit
 			endLine++;
 		}
@@ -287,7 +292,7 @@ void ImGuiMarkdown_TextRegion_RenderLinkTextWrapped(ImGuiMarkdown_TextRegion *re
 	const char *endLine						  = text;
 
 	if (widthLeft > 0.0f) {
-		endLine = ImFont_CalcWordWrapPosition(igGetFont(), igGetFont()->LegacySize, text, text_end, widthLeft);
+		endLine = ImFont_CalcWordWrapPosition(igGetFont(), igGetFontSize(), text, text_end, widthLeft);
 	}
 
 	if (endLine > text && endLine < text_end) {
@@ -296,7 +301,7 @@ void ImGuiMarkdown_TextRegion_RenderLinkTextWrapped(ImGuiMarkdown_TextRegion *re
 			ImVec2		windowPos	  = igGetWindowPos();
 			float		widthNextLine = widthLeft + cursorPos.x - windowPos.x;
 			const char *endNextLine =
-				ImFont_CalcWordWrapPosition(igGetFont(), igGetFont()->LegacySize, text, text_end, widthNextLine);
+				ImFont_CalcWordWrapPosition(igGetFont(), igGetFontSize(), text, text_end, widthNextLine);
 			if (endNextLine == text_end || (endNextLine <= text_end && !ImGuiMarkdown_IsCharInsideWord(*endNextLine))) {
 				endLine = text;
 			}
@@ -322,7 +327,7 @@ void ImGuiMarkdown_TextRegion_RenderLinkTextWrapped(ImGuiMarkdown_TextRegion *re
 		if (*text == ' ') {
 			++text;
 		}
-		endLine = ImFont_CalcWordWrapPosition(igGetFont(), igGetFont()->LegacySize, text, text_end, widthLeft);
+		endLine = ImFont_CalcWordWrapPosition(igGetFont(), igGetFontSize(), text, text_end, widthLeft);
 		if (text == endLine && endLine < text_end) {
 			endLine++;
 		}
@@ -652,7 +657,7 @@ void ImGuiMarkdown_DefaultFormatCallback(const ImGuiMarkdown_FormatInfo *markdow
 			fmt = markdownFormatInfo->config->headingFormats[IMGUI_MARKDOWN_NUM_HEADINGS - 1];
 			if (start) {
 				if (fmt.font) {
-					igPushFont(fmt.font, 16); //TODO: ADD TO STRUCT
+					igPushFont(fmt.font, fmt.size);
 				}
 			} else {
 				if (fmt.font) {
@@ -671,9 +676,14 @@ void ImGuiMarkdown_DefaultFormatCallback(const ImGuiMarkdown_FormatInfo *markdow
 		}
 		if (start) {
 			if (fmt.font) {
-				igPushFont(fmt.font, 16); //TODO: ADD TO STRUCT
+				igPushFont(fmt.font, fmt.size);
 			}
-			igNewLine();
+			// Space above a heading separates it from what came before. A
+			// document that opens with one has nothing before it, and the blank
+			// line only pushed the whole text down.
+			if (igGetCursorPosY() > igGetCursorStartPos().y + 0.5f) {
+				igNewLine();
+			}
 		} else {
 			if (fmt.separator) {
 				igSeparator();

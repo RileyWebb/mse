@@ -14,7 +14,17 @@ FetchContent_MakeAvailable(freetype)
 FetchContent_Declare(
     cimgui_fetch
     GIT_REPOSITORY https://github.com/cimgui/cimgui.git
-    GIT_TAG        docking_inter # The correct docking branch
+    # Pinned to a commit, not to the branch. The Lua bindings are generated from
+    # this checkout's generator and metadata, so what cimgui emits is a property
+    # of one commit -- exactly as the luajit_imgui pin a few files over already
+    # says. Tracking docking_inter meant upstream could break CI overnight
+    # without a line changing here, and on 2026-09-14 it did: the generator was
+    # split into cpp2ffi.lua and cpp2ffi_extra.lua, the staging step only knew
+    # about the first, and every build from then on died requiring the second.
+    #
+    # This also pins imgui itself, which cimgui carries as a submodule.
+    # Bump deliberately, and rebuild the bindings when you do.
+    GIT_TAG        053280dfff63a74cc56a3e493671bee4bb6c60e4
     SOURCE_SUBDIR  "prevent_auto_build" # Prevents FetchContent_MakeAvailable from calling add_subdirectory()
 )
 

@@ -27,7 +27,7 @@ void TAS_Destroy(TAS *tas)
 	}
 }
 
-// Parses the standard 8-character FCEUX button string
+// Parses the standard 8-character FCEUX button string.
 static uint8_t ParseButtonString(const char *str)
 {
 	// FM2 input log format is: RLDUTSBA (Right, Left, Down, Up, sTart, Select, B, A)
@@ -42,8 +42,41 @@ static uint8_t ParseButtonString(const char *str)
 	if (str[5] != '.' && str[5] != ' ') state |= (1 << 2); // Select
 	if (str[6] != '.' && str[6] != ' ') state |= (1 << 1); // B
 	if (str[7] != '.' && str[7] != ' ') state |= (1 << 0); // A
-	
+
 	return state;
+}
+
+// Copies the value half of a "key value" header line, which runs to the end of
+// the line and may contain spaces.
+static void CopyHeaderValue(char *dst, size_t size, const char *line, size_t key_length)
+{
+	const char *value = line + key_length;
+	while (*value == ' ' || *value == '\t') {
+		value++;
+	}
+
+	const size_t length = strlen(value);
+	const size_t copy	= (length < size - 1) ? length : size - 1;
+	memcpy(dst, value, copy);
+	dst[copy] = '\0';
+}
+
+void TAS_Unload(TAS *tas)
+{
+	if (!tas) return;
+
+	tas->frame_count	= 0;
+	tas->playback_frame = 0;
+	tas->loaded			= false;
+	tas->path[0]		= '\0';
+	tas->rom_filename[0] = '\0';
+	tas->rom_checksum[0] = '\0';
+}
+
+void TAS_Rewind(TAS *tas)
+{
+	if (!tas) return;
+	tas->playback_frame = TAS_POWER_ON_FRAMES;
 }
 
 bool TAS_Load(TAS *tas, const char *filepath)
@@ -55,12 +88,17 @@ bool TAS_Load(TAS *tas, const char *filepath)
 		DEBUG_ERROR("Failed to open TAS file: %s", filepath);
 		return false;
 	}
-	
+
 	// Reset existing frames if we are re-loading
-	tas->frame_count = 0;
+	TAS_Unload(tas);
+	tas->ports	= 1;
+	tas->version = 0;
+	tas->emuVersion = 0;
+	tas->palFlag = false;
+
 	if (tas->frames == NULL) {
 		tas->frame_capacity = 16384; // Allocate ~4.5 minutes worth of frames at 60fps initially
-		tas->frames = (TAS_Frame *)malloc(sizeof(TAS_Frame) * tas->frame_capacity);
+		tas->frames			= (TAS_Frame *)malloc(sizeof(TAS_Frame) * tas->frame_capacity);
 		if (!tas->frames) {
 			fclose(file);
 			return false;
@@ -71,30 +109,35 @@ bool TAS_Load(TAS *tas, const char *filepath)
 	while (fgets(line, sizeof(line), file)) {
 		// Strip trailing newlines and carriage returns
 		line[strcspn(line, "\r\n")] = '\0';
-		
+
 		if (line[0] == '|') {
 			// Parse the input log line (Example: |0|R.......|........||)
-			char *p = line + 1; // Skip the initial '|'
+			//
+			// A movie that declares one controller writes the second port as an
+			// empty field, so the field count varies: pipes[2] being "" has to
+			// read as a released pad rather than as a missing one.
+			char *p		   = line + 1; // Skip the initial '|'
 			char *pipes[5] = {0};
-			
+
 			// Tokenize between the pipes
 			for (int i = 0; i < 5; i++) {
 				pipes[i] = p;
-				p = strchr(p, '|');
+				p		 = strchr(p, '|');
 				if (!p) break;
 				*p = '\0'; // Replace pipe with null terminator
-				p++;       // Move pointer to the next section
+				p++;	   // Move pointer to the next section
 			}
-			
+
 			TAS_Frame frame;
 			frame.command	   = pipes[0] ? (uint8_t)atoi(pipes[0]) : 0;
 			frame.controller_1 = (pipes[1] && strlen(pipes[1]) >= 8) ? ParseButtonString(pipes[1]) : 0;
 			frame.controller_2 = (pipes[2] && strlen(pipes[2]) >= 8) ? ParseButtonString(pipes[2]) : 0;
-			
+
 			// Reallocate if we exceed capacity
 			if (tas->frame_count >= tas->frame_capacity) {
 				tas->frame_capacity *= 2;
-				TAS_Frame *new_frames = (TAS_Frame *)realloc(tas->frames, sizeof(TAS_Frame) * tas->frame_capacity);
+				TAS_Frame *new_frames =
+					(TAS_Frame *)realloc(tas->frames, sizeof(TAS_Frame) * tas->frame_capacity);
 				if (!new_frames) {
 					DEBUG_ERROR("Failed to allocate memory for TAS frames");
 					fclose(file);
@@ -102,7 +145,7 @@ bool TAS_Load(TAS *tas, const char *filepath)
 				}
 				tas->frames = new_frames;
 			}
-			
+
 			tas->frames[tas->frame_count++] = frame;
 		} else {
 			// Basic Key-Value header parsing for standard .fm2 files
@@ -114,11 +157,29 @@ bool TAS_Load(TAS *tas, const char *filepath)
 				int pal = 0;
 				sscanf(line, "palFlag %d", &pal);
 				tas->palFlag = (pal != 0);
+			} else if (strncmp(line, "port1", 5) == 0) {
+				int port = 0;
+				sscanf(line, "port1 %d", &port);
+				tas->ports = (port != 0) ? 2 : 1;
+			} else if (strncmp(line, "romFilename", 11) == 0) {
+				CopyHeaderValue(tas->rom_filename, sizeof(tas->rom_filename), line, 11);
+			} else if (strncmp(line, "romChecksum", 11) == 0) {
+				CopyHeaderValue(tas->rom_checksum, sizeof(tas->rom_checksum), line, 11);
 			}
 		}
 	}
-	
+
 	fclose(file);
+
+	snprintf(tas->path, sizeof(tas->path), "%s", filepath);
+	tas->loaded = tas->frame_count > TAS_POWER_ON_FRAMES;
+	if (!tas->loaded) {
+		DEBUG_ERROR("TAS file '%s' has no input log", filepath);
+		TAS_Unload(tas);
+		return false;
+	}
+
+	TAS_Rewind(tas);
 	DEBUG_INFO("Loaded TAS file '%s' with %zu frames.", filepath, tas->frame_count);
 	return true;
 }
@@ -128,12 +189,12 @@ void TAS_ApplyFrame(TAS *tas, NES *nes)
 	if (!tas || !nes) return;
 	if (tas->playback_frame < tas->frame_count) {
 		TAS_Frame *frame = &tas->frames[tas->playback_frame];
-		
+
 		// Command byte check: Bit 0 represents Soft Reset, Bit 1 represents Hard Reset
 		if ((frame->command & 0x01) || (frame->command & 0x02)) {
 			NES_Reset(nes);
 		}
-		
+
 		// Push input state over to cNES subsystem
 		NES_SetController(nes, 0, frame->controller_1);
 		NES_SetController(nes, 1, frame->controller_2);
@@ -148,6 +209,7 @@ void TAS_ApplyFrame(TAS *tas, NES *nes)
 
 bool TAS_IsFinished(TAS *tas, NES *nes)
 {
+	(void)nes;
 	if (!tas) return true;
 	return tas->playback_frame >= tas->frame_count;
 }

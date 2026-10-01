@@ -1,34 +1,154 @@
-# **M**ulti-**S**ystem **E**mulator
+<p align="center"><img src="data/logo/mse.svg" width="128" alt="MSE"></p>
 
-<p align="left">
-  <img src="https://img.shields.io/badge/C++-00599C?style=for-the-badge&logo=c%2B%2B&logoColor=white" alt="C++" />
-  <img src="https://img.shields.io/badge/Lua-2C2D72?style=for-the-badge&logo=lua&logoColor=white" alt="Lua" />
-  <img src="https://img.shields.io/badge/Vite-646CFF?style=for-the-badge&logo=vite&logoColor=white" alt="Vite" />
-  <img src="https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker" />
-</p>
-
-MSE is a ___ written in C11
+# Multi-System Emulator
 
 [![Build Status](https://github.com/RileyWebb/mse/actions/workflows/cmake-multi-platform.yml/badge.svg)](https://github.com/RileyWebb/mse/actions)
-![License](https://img.shields.io/badge/License-MIT-Blue?style=flat)
+![License](https://img.shields.io/badge/License-MIT-blue?style=flat)
+![C11](https://img.shields.io/badge/C11-00599C?style=flat&logo=c&logoColor=white)
+![Lua](https://img.shields.io/badge/LuaJIT-2C2D72?style=flat&logo=lua&logoColor=white)
+[![SDL3](https://img.shields.io/badge/SDL3-173F5F?style=flat&logo=data%3Aimage%2Fpng%3Bbase64%2CiVBORw0KGgoAAAANSUhEUgAAADoAAAAcCAYAAAAwTqwDAAAGdklEQVR42sWZa4zdVRXFf%2Bt%2F5860TktfWEXkVQ0RilhFRYIPHkKJhMTEGE1MiEiMpokfjNj4RQUixlcM4QNooiZ%2BkcSYoCEqEkgTpFqMD7Q0gJYy1oLaUjttWtqZ%2B1h%2BWac5Xu%2FcmenYeJKb%2F%2Bucfc7eZ%2B219z5XtiXJALbfCnwIuBJ4LTABnAD%2BCewCtgPbJD1n%2B3zgdv67GZgB%2FgXsA54CnpA0kzkESFLf9kbgM0APUH53SNpbr2u%2BZns5sFbSC%2FN1PMP2d2zPeP522PYVtt%2Fghbddtj9lu8l87VzfN6TvW%2FKtYYHNtmy3bK%2ByvX7Y%2BMb2SuAh4FZgPNadq3WAM4Azs2s9oJtrb47d7QEXA%2FcAj9heW%2FXt5H52HjkjmyRL6gWB5%2BRdv%2B4zBnweuCKTjQEt4AfA%2FYHsCmAjcCNwXcbNBmatKEOefwy8ACzPhO%2FO5N30uxr4SeScAJrIIPcFvqfUJO0H9tu%2BCjggaddJF7C913bP9myg88AIiLzN9g7bN9m%2BIP37GW%2Fblw%2F0v8j2tnzrVa5x%2BwB0u5Fj25sWC91qvlZgfIPtD9temWcRnyuT2fYjxYcqAW3b49X9pO1NQxTdbHvM9rjtViGK%2BGjfdid9D9mesH3N%2F1LRiuzKvBuKog1wCOgHOgauBZ6w%2FQXb19s%2BS1JH0myRJelYBbm69SR1c%2B3ZHpd0HPhyBUsDq4F3AMc4DS1GaoBPA5dJcgM8kJedikDeDNwB%2FAJ42vZjtrfaPltSN4IWQv3dWHh7%2FLoVo5Y5eqdD0RBROzxxse2JBrgT%2BF0YVxULzuZ%2BFfAu4KvAn2x%2FMoIWAi0nFh4CjtRrCXOfDiUdApoGPhDS29BIOgS8F7gvixmL0uPZgW4VRtYC99m%2BEZhexPzNEKh3Oc0tIec4cF5juy1pWtIW4I2Jp99PRjNThZyxLK4PbAWWVbsz51yB%2BVlBhiv3%2BNvpVtT2rcBHgNWNpE5ejkvaK%2Bl7kj4KXApclBTtaBZXnPwC4NUj%2FFTxzXZg%2Fv6M68VoAh4PauYaq8KYJ0PEIjYz15uBm4AVje2v2V5VWDWhYQJoSXpe0jcDay2CPPrJVmZsXwLcVhmlAZ6U9CywcsTYXq4nf6fAvDcDd5VJPwv81vbHba%2BTNCtpJmEC25PAmyrI9YGpZE1zWXnc9nrbtwCPAmsyrrStldKDrZ1YPZFr%2BZ2MzQskwT5wblzshGyfSJoGcAD4TSqVI4HntYFwL4ttAx8Efg88F%2BWLwlOJjRPAuihYctqShHxR0p0x4vUJYTWL7ws3aIC42sA9ku623QrRjEoaLgWuAV4FPERVNXRHVB%2F1t3sj7LK87%2BQ6bHy%2Fuj9u%2B7biHrlel3GzI2TU7a6MG5snBfx6%2Bj9p%2B3O2z2yAr4RhR8GiBTwN3CJpSyzWqti4Ncf4AvNvA2%2BX9I2yyMgoIaw9QsZgETJPRJFTWBxOaPmjpJdUOe4lyVZen3jZDgz%2FmoRih6SO7SZF80rg8gqSxee6gepRYJ%2BkF0dAbDXwzhikUxmtF7mdKqw1wLOSdg8rysu7EOkngE3AbuBu4LhsjxXiWUh1UFjR9rKUXQcisJNs6nXJRvYCVwGTwN%2BB%2FTHcGuA1wPOx%2BHSUuxr4Szm9kDRle1LSsRIFgDFJR4b5ZNa0HPhYys6X4tN7bEv18caItM6VgoUkXgncG2d%2FMVZfkZCxBvhWyGxjEDIFnA08kzh8KHXruhhmMsrsiJGWJ2Mr%2FdZm4T8ayLXLscxjSSsfDSK%2BK2lnQaCWkHWMhY3b2RUDm4Ffxvf%2BUYWVPvAysD6MOh5Wd04smvRZnrOmY8CFwMGcTvwhRtyZ2Pwf0M351f2B%2BYPADyU9U5RkKdX8%2F6tVMG2i2JXAe2KsPcBPJR2olVyyovMUxx6Q70XM56o%2Bpqple1HyQuDh7N7%2B8MOvge2ljBx2ZrTUum%2B%2BBY96nst4KpnUAEQnbG8IU%2B8O%2FH%2BVlPJgteP9uZLfxe7kONCZK%2F8shDWwyGHvmmKwYd8rpv85sBPYBmwIQT0F7JF0uMgaZfhT3dHVIYpedYA8c9Lxhxhgjnf9we85YJuO%2FHPDylN5ngZ%2Blvh8YsCA%2FYWUM0slhvMTK2fzvB5YlhP3kmCcA7ws6WCJ3bY3h53%2FHIUa4EvJwh4GXhHlpoCj8yFkKSnVSAXLJJKm6smTOAwa8zzgoO3DwArb3YSf2SBkPLF4Sykgyt8Yg8otRsHS%2Fg0EBjWIgeKDbQAAAABJRU5ErkJggg%3D%3D)](https://github.com/libsdl-org/SDL)
+[![CMake](https://img.shields.io/badge/CMake-064F8C?style=flat&logo=cmake&logoColor=white)](https://cmake.org)
 
-# Building
-<p align="left">
-  <img src="https://img.shields.io/badge/C11-00599C?style=for-the-badge&logo=c&logoColor=white" alt="C11" />
-  <img src="https://img.shields.io/badge/Lua-2C2D72?style=for-the-badge&logo=lua&logoColor=white" alt="Lua" />
-  <img src="https://img.shields.io/badge/CMake-646CFF?style=for-the-badge&logo=cmake&logoColor=white" alt="Cmake" />
-  <img src="https://img.shields.io/badge/SDL?style=for-the-badge&logo=data:image/png;base64,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" alt="SDL" >
-</p>
-```
+MSE is a multi-system emulator frontend written in C11. Emulator cores are
+plugins loaded at runtime. The frontend owns the window, the GPU and the UI, and
+is built on SDL3 and Dear ImGui (through cimgui).
+
+## Features
+
+- **Pluggable backends.** Each system is a shared library the frontend loads at
+  startup.
+- **Game library** with metadata and cover art, cached in SQLite.
+- **Lua scripting.** Backends can ship their own ImGui panels and in-game
+  overlays, written in LuaJIT.
+- **Debugging tools**: CPU, PPU and memory viewers, cheats, and TAS movie
+  playback.
+- **Built-in profiler** (F9) and a console for commands and cvars (F10 or `` ` ``).
+
+## Components
+
+| Component | What it is | Source |
+| --- | --- | --- |
+| **libmse** | The library that backends and the frontend share: backend loading, cvars, console, input, game library. | [RileyWebb/libmse](https://github.com/RileyWebb/libmse) (submodule at [`libmse/`](libmse)) |
+| **cNES** | Nintendo Entertainment System backend. See [its README](backends/cnes/README.md). | [`backends/cnes/`](backends/cnes) |
+
+## Building
+
+### Recommended toolchain
+
+| | Windows | Linux |
+| --- | --- | --- |
+| **Compiler** | **GCC** via [MinGW-w64](https://www.mingw-w64.org/) | **GCC** |
+| **Generator** | `MinGW Makefiles` | Makefiles (default) or Ninja |
+| **Build type** | `RelWithDebInfo` | `RelWithDebInfo` |
+
+**Use GCC.** CI builds only with GCC on both platforms, so it's the only
+compiler we know works. Clang and MSVC may work but aren't tested.
+
+You also need:
+
+- Git
+- CMake 4.1 or newer
+- On Linux, the X11/Wayland development packages and the Vulkan headers.
+  [The CI workflow](.github/workflows/cmake-multi-platform.yml) lists the exact
+  packages.
+
+CMake fetches the other dependencies (SDL3, cimgui, cimplot, LuaJIT, SQLite,
+minizip-ng, stb and a few Lua libraries) while it configures, so the first
+configure takes a while.
+
+### Steps
+
+```sh
+git clone --recursive https://github.com/RileyWebb/mse
+cd mse
+# or, in an existing clone:
 git submodule update --init --recursive
+
+# Windows (MinGW-w64)
+cmake -B build -G "MinGW Makefiles" -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=RelWithDebInfo
+# Linux
+cmake -B build -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+cmake --build build
 ```
 
-## TODO
-- add curl for automatic backend updates
+Everything is built into `bin/`, which is also the directory to run from:
 
-move all external projects to use fetchmodule shit
-nes game database api for loaded games
-sqllite setup for library caching
+```sh
+cd bin
+./mse [options] [rom]
+```
 
-cnes:
-precomp rom, interprete asdjndas
+`mse --help` lists the command-line options. Any cvar can be set at startup
+with `--set name=value`.
+
+### Tests
+
+```sh
+ctest --test-dir build              # everything
+ctest --test-dir build -LE slow     # skip the long AccuracyCoin run
+```
+
+## Keys
+
+| Key | Action |
+| --- | --- |
+| F5 | Pause / resume |
+| F9 | Profiler |
+| F10 or `` ` `` | Console |
+| F11 | Fullscreen |
+
+## Folder structure
+
+```
+mse/
+├── libmse/                  shared library (git submodule → RileyWebb/libmse)
+│   ├── include/libmse/      public headers; everything here is prefixed libmse_
+│   ├── src/                 backend loader, cvars, console, input, library, profiler
+│   └── data/lua/            metadata scraper, cover art, cvar helpers
+├── frontend/                the mse application
+│   ├── src/                 SDL3 + cimgui UI, input, library view, console
+│   ├── lua/                 Lua UI API that backend panels are written against
+│   ├── tests/               headless tests, including panel_smoke.lua
+│   └── cmake/               SDL, cimgui and LuaJIT fetch scripts
+├── backends/
+│   └── cnes/                NES backend
+│       ├── src/             CPU, PPU, APU, mappers, plus backend.c (plugin glue)
+│       ├── include/cNES/    core headers; external/ holds the debug ABI the UI uses
+│       ├── data/lua/        panels (ui/), overlays (overlays/), per-game scripts (games/)
+│       └── tests/           test ROM suites, headless runner and baselines
+├── data/                    fonts, shaders and LUA_API.md
+├── bin/                     build output and runtime working directory
+└── .github/workflows/       CI
+```
+
+A new backend goes in its own folder under `backends/`. It builds as a shared
+library into `bin/`, where the frontend finds it at startup.
+
+To write code for the project, read [AGENTS.md](AGENTS.md) first. It covers
+naming, comments and header conventions.
+
+## Progress
+
+The progress of each backend is tracked in its own README ([cNES](backends/cnes/README.md)).
+
+- [x] Runtime-loaded backend plugins
+- [x] Game library with SQLite cache
+- [x] Metadata scraping and cover art
+- [x] Lua panels and in-game overlays
+- [x] Console and cvars
+- [x] Profiler
+- [x] Controller configuration
+- [x] All dependencies fetched by CMake
+- [ ] Automatic backend updates
+
+## Licence
+
+MIT. See [LICENCE](LICENCE).
+
+## Credits
+
+MSE uses SDL3, Dear ImGui, LuaJIT, SQLite and other open-source projects, along
+with two fonts. [CREDITS](CREDITS.md) lists them all, with their authors and
+licences. Each backend credits its own resources in its folder, for example
+[cNES](backends/cnes/CREDITS.md).

@@ -1,6 +1,14 @@
 cmake_minimum_required(VERSION 4.1)
 project(mse C)
 
+# libmse and every backend are shared libraries, and they link static ones --
+# SQLite, minizip, stb, LibreSSL. ELF will not take non-PIC objects into a
+# shared object at all ("relocation R_X86_64_PC32 ... recompile with -fPIC"),
+# which is why this build worked on Windows, where PE has no such rule, and
+# failed to link on Linux. Set before anything is added so every fetched
+# dependency inherits it; a no-op on Windows.
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/bin)
 
@@ -15,7 +23,7 @@ add_subdirectory(frontend)
 add_custom_target(copy_info
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
     ${CMAKE_CURRENT_SOURCE_DIR}/LICENCE
-    ${CMAKE_CURRENT_SOURCE_DIR}/CREDITS
+    ${CMAKE_CURRENT_SOURCE_DIR}/CREDITS.md
     ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 
 add_custom_target(copy_data
@@ -24,6 +32,9 @@ add_custom_target(copy_data
     ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/data/)
 
 add_dependencies(mse copy_info copy_data)
+
+# Packaging: the install tree, and the NSIS installer built from it.
+include(cmake/Install.cmake)
 
 # IGNORE AFTER THIS WIP
 #find_program(GLSLC_EXECUTABLE glslc)

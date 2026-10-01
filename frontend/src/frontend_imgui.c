@@ -2,14 +2,34 @@
 
 #include <string.h>
 
+#include "libmse/libmse_cvar.h"
+#include "libmse/libmse_debug.h"
+#include "libmse/libmse_resource.h"
+
+static void mse_cvar_font_cb(libmse_cvar_t *cvar, void *user_data);
+
 static ImFont *g_font_small = NULL;
+// The typeface, as a setting. Changing it rebuilds the atlas rather than
+// needing a restart: the renderer owns the texture, and ImGui 1.92 will ask it
+// for a new one as soon as the atlas is marked dirty.
+LIBMSE_CVAR_DEFINE_STRING(g_cv_font, "mse_font", "data/fonts/JetBrainsMono.ttf",
+                          "TrueType file the interface is drawn with");
+
 static ImFont *g_font_body = NULL;
 static ImFont *g_font_title = NULL;
 static ImFont *g_font_icon = NULL;
-static float g_font_size_small = 0.0f;
-static float g_font_size_body = 0.0f;
-static float g_font_size_title = 0.0f;
-static float g_font_size_icon = 0.0f;
+// Sizes at 1x. What callers get is these times the interface scale, read
+// fresh every time: ImGui 1.92 bakes glyphs at whatever size is asked for, so
+// there is no atlas to rebuild when the scale moves. These used to be
+// multiplied out once at startup, which left every piece of text -- and the
+// logo, which is sized to sit beside two lines of it -- at the display scale
+// the app launched with while the rest of the layout followed mse_content_scale.
+#define MSE_FONT_BASE_SMALL 13.0f
+#define MSE_FONT_BASE_BODY  16.0f
+#define MSE_FONT_BASE_TITLE 22.0f
+#define MSE_FONT_BASE_ICON  24.0f
+
+static float g_font_scale = 1.0f;
 
 static const ImWchar g_icon_ranges[] = {
     0x2190, 0x21FF, // Arrows
@@ -35,6 +55,11 @@ static const ImWchar g_body_ranges[] = {
     0
 };
 
+// Builds the four faces from whatever mse_font currently names. Returns false
+// and leaves the old atlas alone if the file cannot be read, so a typo in the
+// cvar costs an error line rather than an unreadable interface.
+static bool mse_frontend_imgui_build_fonts(void);
+
 static ImFont *mse_frontend_imgui_add_font(const char *font_path, float size_pixels, const ImWchar *glyph_ranges) {
     ImFontAtlas *atlas = igGetIO_Nil()->Fonts;
     //ImFontAtlas_SetTexDesiredWidth(atlas, 2048); // Optional: larger texture space
@@ -42,6 +67,53 @@ static ImFont *mse_frontend_imgui_add_font(const char *font_path, float size_pix
     //unsigned int flags = ; 
     //ImFontAtlas_SetBuilderFlags(atlas, flags);
     return ImFontAtlas_AddFontFromFileTTF(atlas, font_path, size_pixels, NULL, glyph_ranges);
+}
+
+static bool mse_frontend_imgui_build_fonts(void) {
+    ImGuiIO *io = igGetIO_Nil();
+    if (io == NULL || io->Fonts == NULL) {
+        return false;
+    }
+
+    const char *path = (g_cv_font != NULL && *g_cv_font != NULL && **g_cv_font != '\0')
+                           ? *g_cv_font
+                           : "data/fonts/JetBrainsMono.ttf";
+
+    // Everything, not just the changed face: the atlas is one texture and the
+    // four sizes share it, so they are rebuilt or none of them are.
+    //
+    // ClearFonts, not Clear: Clear also throws away the atlas's texture and the
+    // renderer's link to it, which on the first build -- before the backend has
+    // attached -- leaves a window that draws nothing at all.
+    ImFontAtlas_ClearFonts(io->Fonts);
+
+    ImFont *body  = mse_frontend_imgui_add_font(path, mse_frontend_imgui_font_size_body(), g_body_ranges);
+    ImFont *small = mse_frontend_imgui_add_font(path, mse_frontend_imgui_font_size_small(), NULL);
+    ImFont *title = mse_frontend_imgui_add_font(path, mse_frontend_imgui_font_size_title(), NULL);
+    ImFont *icon  = mse_frontend_imgui_add_font(path, mse_frontend_imgui_font_size_icon(), g_icon_ranges);
+
+    if (body == NULL || small == NULL || title == NULL || icon == NULL) {
+        DEBUG_ERROR("Could not load font '%s'", path);
+        return false;
+    }
+
+    g_font_body  = body;
+    g_font_small = small;
+    g_font_title = title;
+    g_font_icon  = icon;
+    return true;
+}
+
+static void mse_cvar_font_cb(libmse_cvar_t *cvar, void *user_data) {
+    (void)cvar;
+    (void)user_data;
+
+    // A failed rebuild has already cleared the atlas, so fall back to the
+    // stock face rather than leaving the interface with no glyphs at all.
+    if (!mse_frontend_imgui_build_fonts()) {
+        libmse_cvar_set_s("mse_font", "data/fonts/JetBrainsMono.ttf");
+        mse_frontend_imgui_build_fonts();
+    }
 }
 
 bool mse_frontend_imgui_initialize(mse_frontend_imgui_backend_t *backend, const mse_frontend_imgui_config_t *config) {
@@ -64,55 +136,35 @@ bool mse_frontend_imgui_initialize(mse_frontend_imgui_backend_t *backend, const 
     io->ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io->ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
 
-    const float font_scale = backend->content_scale;
-    g_font_size_small = 13.0f * font_scale;
-    g_font_size_body = 16.0f * font_scale;
-    g_font_size_title = 22.0f * font_scale;
-    g_font_size_icon = 24.0f * font_scale;
+    // Window layout goes next to the rest of the user's state rather than into
+    // the install directory, which may not be writable and is not theirs. The
+    // buffer is static because ImGui keeps the pointer rather than a copy.
+    {
+        static char ini_path[512];
+        const char *appdata = libmse_resource_get_appdata_path();
+        if (appdata != NULL) {
+            snprintf(ini_path, sizeof(ini_path), "%s/imgui.ini", appdata);
+            io->IniFilename = ini_path;
+        }
+    }
 
-    g_font_body = mse_frontend_imgui_add_font("data/fonts/JetBrainsMono.ttf", g_font_size_body, g_body_ranges);
-    g_font_small = mse_frontend_imgui_add_font("data/fonts/JetBrainsMono.ttf", g_font_size_small, NULL);
-    g_font_title = mse_frontend_imgui_add_font("data/fonts/JetBrainsMono.ttf", g_font_size_title, NULL);
-    g_font_icon = mse_frontend_imgui_add_font("data/fonts/JetBrainsMono.ttf", g_font_size_icon, g_icon_ranges);
+    // The display scale until the UI state is up and hands over the real one.
+    mse_frontend_imgui_set_font_scale(backend->content_scale);
 
-    if (g_font_body == NULL || g_font_small == NULL || g_font_title == NULL || g_font_icon == NULL) {
+    if (!mse_frontend_imgui_build_fonts()) {
         igDestroyContext(NULL);
-        g_font_small = NULL;
-        g_font_body = NULL;
-        g_font_title = NULL;
-        g_font_icon = NULL;
-        g_font_size_small = 0.0f;
-        g_font_size_body = 0.0f;
-        g_font_size_title = 0.0f;
-        g_font_size_icon = 0.0f;
         return false;
     }
 
-    igStyleColorsDark(NULL);
+    // Reloads on change, from the console or a config, with no restart.
+    libmse_cvar_register_change_cb("mse_font", mse_cvar_font_cb, NULL);
 
-    ImGuiStyle *style = igGetStyle();
-    if (style != NULL && backend->content_scale != 1.0f) {
-        style->WindowPadding.x *= backend->content_scale;
-        style->WindowPadding.y *= backend->content_scale;
-        style->FramePadding.x *= backend->content_scale;
-        style->FramePadding.y *= backend->content_scale;
-        style->ItemSpacing.x *= backend->content_scale;
-        style->ItemSpacing.y *= backend->content_scale;
-        style->ItemInnerSpacing.x *= backend->content_scale;
-        style->ItemInnerSpacing.y *= backend->content_scale;
-        style->IndentSpacing *= backend->content_scale;
-        style->ScrollbarSize *= backend->content_scale;
-        style->GrabMinSize *= backend->content_scale;
-        style->WindowRounding *= backend->content_scale;
-        style->ChildRounding *= backend->content_scale;
-        style->FrameRounding *= backend->content_scale;
-        style->PopupRounding *= backend->content_scale;
-        style->ScrollbarRounding *= backend->content_scale;
-        style->GrabRounding *= backend->content_scale;
-        style->LogSliderDeadzone *= backend->content_scale;
-        style->TabRounding *= backend->content_scale;
-        style->TabBarBorderSize *= backend->content_scale;
-    }
+    // Style metrics are owned by the theme, which scales them itself. Only the
+    // scale is set here: applying a theme would have to name one, and which
+    // theme this session uses is not known until the UI state is up. Naming
+    // Midnight here made the first real apply look like a theme change, which
+    // wrote the palette over every colour a config had just set.
+    mse_frontend_theme_set_scale(backend->content_scale);
 
     if (!ImGui_ImplSDL3_InitForSDLGPU(config->window)) {
         igDestroyContext(NULL);
@@ -160,10 +212,7 @@ void mse_frontend_imgui_shutdown(mse_frontend_imgui_backend_t *backend) {
     g_font_body = NULL;
     g_font_title = NULL;
     g_font_icon = NULL;
-    g_font_size_small = 0.0f;
-    g_font_size_body = 0.0f;
-    g_font_size_title = 0.0f;
-    g_font_size_icon = 0.0f;
+    g_font_scale = 1.0f;
 
     backend->initialized = false;
     backend->window = NULL;
@@ -194,19 +243,31 @@ ImFont *mse_frontend_imgui_font_icon(void) {
 }
 
 float mse_frontend_imgui_font_size_small(void) {
-    return g_font_size_small;
+    return MSE_FONT_BASE_SMALL * g_font_scale;
 }
 
 float mse_frontend_imgui_font_size_body(void) {
-    return g_font_size_body;
+    return MSE_FONT_BASE_BODY * g_font_scale;
 }
 
 float mse_frontend_imgui_font_size_title(void) {
-    return g_font_size_title;
+    return MSE_FONT_BASE_TITLE * g_font_scale;
 }
 
 float mse_frontend_imgui_font_size_icon(void) {
-    return g_font_size_icon;
+    return MSE_FONT_BASE_ICON * g_font_scale;
+}
+
+void mse_frontend_imgui_set_font_scale(float scale) {
+    g_font_scale = (scale > 0.0f) ? scale : 1.0f;
+
+    // Text drawn without pushing a font takes its size from here. The explicit
+    // sizes above go through PushFont and AddText, which ImGui does not scale
+    // again as long as FontScaleMain stays at 1 -- so the scale lives in the
+    // sizes, once, and never in FontScaleMain as well.
+    if (igGetCurrentContext() != NULL) {
+        igGetStyle()->FontSizeBase = mse_frontend_imgui_font_size_body();
+    }
 }
 
 void mse_frontend_imgui_process_event(const SDL_Event *event) {

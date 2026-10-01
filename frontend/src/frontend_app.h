@@ -4,12 +4,17 @@
 #include <SDL3/SDL.h>
 #include <stdbool.h>
 
+#include "frontend_args.h"
+
 typedef struct mse_frontend_app_config_s {
     const char *title;
     int width;
     int height;
     bool resizable;
     bool high_pixel_density;
+
+    /* What the command line asked for. Never NULL; main fills it in. */
+    const mse_frontend_args_t *args;
 } mse_frontend_app_config_t;
 
 typedef struct mse_frontend_context_s {

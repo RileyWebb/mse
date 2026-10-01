@@ -1,18 +1,25 @@
 #define DEBUG_LOG_SOURCE "frontend"
 #include "frontend_app.h"
+#include "frontend_logo.h"
+#include "frontend_chrome.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "libmse/libmse.h"
+#include "libmse/libmse_resource.h"
 #include "libmse/libmse_debug.h"
 #include "libmse/libmse_profiler.h"
 #include "frontend_profiler.h"
 #include "frontend_screenshot.h"
+#include "frontend_startup_log.h"
+#include "frontend_covers.h"
 #include "frontend_cimgui.h"
 #include "frontend_imgui.h"
 #include "frontend_theme.h"
+#include "frontend_widgets.h"
+#include "frontend_icons.h"
 #include "frontend_ui.h"
 #include "frontend_lua_ui.h"
 #include "frontend_input.h"
@@ -491,6 +498,17 @@ static void mse_frontend_backend_preview_contents(const mse_frontend_backend_pre
 
         ImDrawList *draw_list = igGetWindowDrawList();
 
+        // The picture is letterboxed, so the bars have to be filled with
+        // something. Black, not the theme surface: anything else reads as part
+        // of the game and throws the colour off.
+        {
+            const ImVec2 win_pos  = igGetWindowPos();
+            const ImVec2 win_size = igGetWindowSize();
+            ImDrawList_AddRectFilled(draw_list, win_pos,
+                                     (ImVec2){win_pos.x + win_size.x, win_pos.y + win_size.y},
+                                     igGetColorU32_Vec4((ImVec4){0.0f, 0.0f, 0.0f, 1.0f}), 0.0f, 0);
+        }
+
         ImDrawList_AddCallback(draw_list, igGetPlatformIO_Nil()->DrawCallback_SetSamplerNearest, NULL, 0);
 
         ImDrawList_AddImage(draw_list, mse_frontend_make_texture_ref(&preview->texture_binding), 
@@ -498,13 +516,27 @@ static void mse_frontend_backend_preview_contents(const mse_frontend_backend_pre
 
         ImDrawList_AddCallback(draw_list, igGetPlatformIO_Nil()->DrawCallback_SetSamplerLinear, NULL, 0);
 
+        // Game overlays, drawn in the picture's own pixel coordinates so a
+        // hitbox lands on the sprite it belongs to at any window size. Before
+        // the frame counter, which belongs to the frontend and should stay on
+        // top of whatever a script draws.
+        mse_frontend_lua_ui_draw_overlays(&(mse_frontend_overlay_view_t){
+            .x        = cursor_screen_pos.x,
+            .y        = cursor_screen_pos.y,
+            .width    = image_size.x,
+            .height   = image_size.y,
+            .pixels_x = (int)tex_w,
+            .pixels_y = (int)tex_h,
+        });
+
         // After the image, so it draws on top of it, and against the image's
         // own bounds rather than the window's -- the picture is letterboxed
         // inside the window, and a counter in the black bar reads as a bug.
         mse_frontend_profiler_draw_framecounter(cursor_screen_pos.x, cursor_screen_pos.y,
                                                 image_size.x, image_size.y);
     } else {
-        igTextDisabled("No backend frame available.");
+        mse_frontend_ui_empty_state(MSE_ICON_START_CORE, "Nothing running",
+                                    "Load a ROM from the library, or from File > Open ROM, to start a backend.");
     }
 }
 
@@ -526,7 +558,7 @@ static void mse_frontend_backend_emulation_draw(mse_frontend_backend_preview_t *
                 ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoNavFocus;
     }
     //igPushStyleColor_Vec4(ImGuiCol_WindowBg, (ImVec4){0.0f, 0.0f, 0.0f, 0.0f});
-    if (igBegin(fill_viewport ? "EMULATION_FULLSCREEN" : "EMULATION_DOCK", NULL, flags)) {
+    if (igBegin(fill_viewport ? "###EMULATION_FULLSCREEN" : "Emulation###EMULATION_DOCK", NULL, flags)) {
         mse_frontend_backend_preview_contents(preview, ui_scale);
     }
     
@@ -550,6 +582,11 @@ static SDL_Window *mse_frontend_create_window(const mse_frontend_app_config_t *c
     if (config != NULL && config->high_pixel_density) {
         flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
     }
+    // Decided before the window exists, so it is not drawn once with the
+    // system's frame and then stripped of it.
+    if (mse_frontend_chrome_wants_borderless()) {
+        flags |= SDL_WINDOW_BORDERLESS;
+    }
 
     const char *title = (config != NULL && config->title != NULL) ? config->title : "Multi-System Emulator";
     const int width = (config != NULL && config->width > 0) ? config->width : 1280;
@@ -560,6 +597,12 @@ static SDL_Window *mse_frontend_create_window(const mse_frontend_app_config_t *c
     SDL_Window *window = SDL_CreateWindow(title, scaled_width, scaled_height, flags);
     if (window != NULL) {
         SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+
+        // Set explicitly even on Windows, where the executable carries the icon
+        // as a resource: SDL registers its window class without it, and Linux
+        // has no resource to fall back on at all.
+        mse_frontend_logo_set_window_icon(window);
+        mse_frontend_chrome_attach(window);
     }
 
     return window;
@@ -615,9 +658,41 @@ static bool mse_frontend_set_swapchain_present_mode(SDL_GPUDevice *device, SDL_W
 }
 
 int mse_frontend_run(const mse_frontend_app_config_t *config) {
-    const char *config_file = "config.cfg";
-    if (!libmse_cmd_execute("exec", 1, &config_file)) {
-        DEBUG_ERROR("Failed to parse config.cfg");
+    static const mse_frontend_args_t no_args = {0};
+    const mse_frontend_args_t *args = (config != NULL && config->args != NULL) ? config->args : &no_args;
+
+    // --set lands before the config file, so a value asked for on the command
+    // line is not quietly overwritten by whatever was saved last run. Cvars
+    // that do not exist yet are held as placeholders and applied when their
+    // owner registers them, which is the same path config.cfg takes.
+    for (size_t i = 0; i < args->set_count; ++i) {
+        char assignment[512];
+        snprintf(assignment, sizeof(assignment), "%s", args->sets[i]);
+
+        char *equals = strchr(assignment, '=');
+        if (equals == NULL) {
+            DEBUG_ERROR("--set wants name=value, got '%s'", args->sets[i]);
+            continue;
+        }
+        *equals = '\0';
+
+        const char *set_argv[] = {assignment, equals + 1};
+        libmse_cmd_execute("set", 2, set_argv);
+    }
+
+    if (args->config_path != NULL) {
+        if (!libmse_cmd_execute("exec", 1, (const char **)&args->config_path)) {
+            DEBUG_ERROR("Failed to parse %s", args->config_path);
+        }
+    }
+
+    /* The user's own startup script, after config.cfg so it has the last word.
+     * config.cfg is written by the app and rewritten whenever settings are
+     * exported; this one is never touched, which is what makes it the place to
+     * keep a change you want to survive. Created empty if it is not there. */
+    const char *autoexec = libmse_resource_get_autoexec_path();
+    if (autoexec != NULL) {
+        libmse_cmd_execute("exec", 1, &autoexec);
     }
 
     SDL_SetHint("SDL_IME_SHOW_UI", "1");
@@ -711,6 +786,12 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
      * in the View menu from the start. */
     if (mse_frontend_lua_ui_init()) {
         mse_frontend_lua_ui_load_backend(cnes_backend);
+
+        /* Drop-in overlays. The backend's own go first, because its scripts put
+         * their directory on package.path and a user script in data/lua/overlays
+         * reaches the debug API through require("ui.debug") the same way. */
+        mse_frontend_lua_ui_load_directory("cnes/data/lua/overlays");
+        mse_frontend_lua_ui_load_directory("data/lua/overlays");
     }
 
     mse_frontend_backend_preview_t backend_preview;
@@ -738,9 +819,13 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
     const float transition_duration = 0.25f;
     Uint64 last_frame_ticks = SDL_GetTicksNS();
 
-    mse_frontend_ui_state_t ui_state;
+    // static, not a local: cvars are bound to fields of this, and a cvar that
+    // points into a stack frame is only valid while that frame is. It happens
+    // to outlive everything here today, which is exactly the kind of thing
+    // that stops being true during a refactor and fails silently when it does.
+    static mse_frontend_ui_state_t ui_state;
     mse_frontend_ui_init(&ui_state);
-    ui_state.content_scale       = content_scale;
+    ui_state.content_scale       = args->scale > 0.0f ? args->scale : content_scale;
     ui_state.active_backend_name = (cnes_backend != NULL && cnes_backend->info.name != NULL)
                                         ? cnes_backend->info.name : NULL;
     ui_state.input_manager  = input_manager;
@@ -753,7 +838,29 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
     mse_frontend_profiler_init();
     mse_frontend_screenshot_init();
 
-    DEBUG_INFO("Frontend initialized");
+    if (args->fullscreen) {
+        ui_state.fullscreen = 1;
+        mse_frontend_set_window_fullscreen(window, true);
+    }
+
+    mse_frontend_log_startup(&(mse_frontend_startup_info_t){
+        .window           = window,
+        .device           = device,
+        .swapchain_format = swapchain_format,
+        .present_mode     = g_app_ctx.presentation_mode,
+        .content_scale    = content_scale,
+        .backends         = g_backend_list,
+        .backend_count    = backend_count,
+    });
+
+    // Loaded after the banner so the log reads in the order things happened.
+    if (args->rom_path != NULL && !mse_frontend_ui_load_rom(&ui_state, args->rom_path)) {
+        DEBUG_ERROR("Could not load '%s'", args->rom_path);
+    }
+
+    for (size_t i = 0; i < args->exec_count; ++i) {
+        libmse_cmd_execute("exec", 1, (const char **)&args->execs[i]);
+    }
 
     g_app_ctx.is_running = true;
     while (g_app_ctx.is_running) {
@@ -777,6 +884,17 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
                 if (view_mode == MSE_FRONTEND_VIEW_CORE || view_mode == MSE_FRONTEND_VIEW_TRANSITION_TO_CORE) {
                     view_mode = MSE_FRONTEND_VIEW_TRANSITION_TO_MENU;
                     transition_t = 0.0f;
+                }
+                continue;
+            }
+
+            // Pause/resume toggles on one key, like every other emulator.
+            if (event.type == SDL_EVENT_KEY_DOWN && event.key.key == SDLK_F5) {
+                libmse_backend_t *transport = mse_frontend_input_manager_get_backend(input_manager);
+                if (mse_backend_get_state(transport) == LIBMSE_BACKEND_PAUSED) {
+                    mse_backend_resume(transport);
+                } else {
+                    mse_backend_pause(transport);
                 }
                 continue;
             }
@@ -850,7 +968,10 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
         }
 
         LIBMSE_PROFILE_START("ui");
-        mse_frontend_theme_apply(ui_state.theme);
+        mse_frontend_theme_set_scale(ui_state.content_scale);
+        mse_frontend_theme_apply();
+        // After the theme, which writes the ImGui style this sets a field of.
+        mse_frontend_imgui_set_font_scale(ui_state.content_scale);
 
         LIBMSE_PROFILE_START("imgui begin");
         mse_frontend_imgui_begin_frame();
@@ -864,10 +985,41 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
             LIBMSE_PROFILE_START("menus and panels");
             mse_frontend_ui_draw(&ui_state);
             LIBMSE_PROFILE_END();
+        } else if (ui_state.menu_bar_in_game || mse_frontend_chrome_active()) {
+            // With custom decoration the bar is also the title bar, the only
+            // thing that moves or closes the window, so a windowed game keeps
+            // it whatever mse_menu_bar_in_game says.
+            // Only the bar. Before the emulation view, because ImGui takes the
+            // bar's height out of the viewport's work area and the fullscreen
+            // picture is sized from that -- the game then sits below the bar
+            // rather than behind it.
+            LIBMSE_PROFILE_START("menu bar");
+            mse_frontend_ui_draw_menu_bar_only(&ui_state);
+            LIBMSE_PROFILE_END();
         }
 
         LIBMSE_PROFILE_START("emulation view");
-        mse_frontend_backend_emulation_draw(&backend_preview, content_scale, view_mode != MSE_FRONTEND_VIEW_MENU);
+        {
+            // In the menu the preview is only worth a window while something is
+            // actually running. It used to be drawn regardless, which left an
+            // empty "Emulation" window floating over the frontend -- and with
+            // multi-viewport on it could detach into an OS window of its own and
+            // sit there swallowing clicks.
+            const bool core_view = view_mode != MSE_FRONTEND_VIEW_MENU;
+            const bool has_content = mse_backend_get_state(active_backend) != LIBMSE_BACKEND_STOPPED;
+            if (core_view || has_content) {
+                mse_frontend_backend_emulation_draw(&backend_preview, content_scale, core_view);
+            }
+        }
+        LIBMSE_PROFILE_END();
+
+        // Backend-defined panels, after the emulation view so they stack above
+        // it, and outside the view_mode check above so they stay up while a
+        // game runs -- watching a CPU or a movie's input log against a frozen
+        // menu is not what any of them are for. Each panel is isolated inside
+        // here, so one erroring cannot take the rest of the frame with it.
+        LIBMSE_PROFILE_START("lua panels");
+        mse_frontend_lua_ui_draw();
         LIBMSE_PROFILE_END();
 
         // Last, and inside "ui", so the window is honest about what drawing it
@@ -894,6 +1046,8 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
             }
         }
         LIBMSE_PROFILE_END(); // "ui"
+
+        mse_frontend_chrome_draw_frame();
 
         LIBMSE_PROFILE_START("imgui render");
         igRender();
@@ -982,6 +1136,9 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
     mse_frontend_backend_preview_shutdown(&backend_preview, device);
     if (cnes_backend != NULL)
         mse_backend_shutdown(cnes_backend);
+
+    // Before the ImGui context goes, while the texture list is still valid.
+    mse_frontend_covers_shutdown();
 
     mse_frontend_imgui_shutdown(&imgui_backend);
     SDL_ReleaseWindowFromGPUDevice(device, window);

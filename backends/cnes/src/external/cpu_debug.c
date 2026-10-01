@@ -507,6 +507,26 @@ int cnes_debug_write(cnes_debug_space_t space, uint32_t address, uint8_t value)
 			}
 			break;
 
+		case CNES_DEBUG_SPACE_PPU:
+			// Nametable RAM and palette only. Below $2000 is pattern memory,
+			// which may be ROM and is the mapper's to decide about.
+			if (ppu != NULL) {
+				const uint16_t masked = (uint16_t)(address & 0x3FFF);
+				if (masked >= 0x3F00) {
+					ppu->palette[masked & 0x1F] = value;
+					ok                          = true;
+				} else if (masked >= 0x2000) {
+					// Through nametable_ptrs so a write lands where the PPU
+					// would read it, mirroring and all.
+					uint8_t *table = ppu->nametable_ptrs[(masked >> 10) & 0x03];
+					if (table != NULL) {
+						table[masked & 0x03FF] = value;
+						ok                     = true;
+					}
+				}
+			}
+			break;
+
 		default:
 			break;
 	}
@@ -820,4 +840,17 @@ size_t cnes_debug_disassemble(uint16_t address, char *buf, size_t buf_size)
 	}
 
 	return insn.length;
+}
+
+uint8_t cnes_debug_controller(uint32_t port)
+{
+	if (port > 1u) {
+		return 0;
+	}
+
+	NES *nes = cnes_backend_lock_nes();
+	const uint8_t state = (nes != NULL) ? nes->controllers[port] : 0u;
+	cnes_backend_unlock_nes();
+
+	return state;
 }

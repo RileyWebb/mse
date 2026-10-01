@@ -9,6 +9,7 @@
 #include "libmse/libmse_lua.h"
 #include "libmse/libmse_log.h"
 #include "frontend_file_dialog.h"
+#include "frontend_theme.h"
 
 #include "frontend_ui.h"
 
@@ -86,7 +87,7 @@ void mse_frontend_ui_draw_lua_debugger(mse_frontend_ui_state_t *state) {
         // Metadata & Performance Indicators aligned using an explicit column offset to handle thin spacing cleanly
         igText("Thread Node:");
         igSameLine(130.0f, -1);
-        igTextColored((ImVec4){0.3f, 0.75f, 1.0f, 1.0f}, active_worker->name ? active_worker->name : "Unnamed");
+        igTextColored(mse_frontend_theme()->info, active_worker->name ? active_worker->name : "Unnamed");
         
         igText("Execution:");
         igSameLine(130.0f, -1);
@@ -97,9 +98,9 @@ void mse_frontend_ui_draw_lua_debugger(mse_frontend_ui_state_t *state) {
         igText("Status:");
         igSameLine(130.0f, -1);
         if (busy) {
-            igTextColored((ImVec4){1.0f, 0.4f, 0.4f, 1.0f}, "BUSY");
+            igTextColored(mse_frontend_theme()->warning, "BUSY");
         } else {
-            igTextColored((ImVec4){0.4f, 1.0f, 0.4f, 1.0f}, "READY");
+            igTextColored(mse_frontend_theme()->success, "READY");
         }
 
         igSpacing();
@@ -214,7 +215,7 @@ void mse_frontend_ui_draw_lua_debugger(mse_frontend_ui_state_t *state) {
 
                             igTableSetColumnIndex(1);
                             if (lua_isboolean(L, -1)) {
-                                igTextColored((ImVec4){0.4f, 0.8f, 1.0f, 1.0f}, "Loaded (bool)");
+                                igTextColored(mse_frontend_theme()->info, "Loaded (bool)");
                             } else {
                                 igText(value_type);
                             }

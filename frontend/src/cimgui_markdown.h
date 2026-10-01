@@ -96,6 +96,9 @@ CIMGUI_API void ImGuiMarkdown_DefaultFormatCallback(const ImGuiMarkdown_FormatIn
 
 typedef struct ImGuiMarkdown_HeadingFormat {
 	ImFont *font;
+	// The size the heading is drawn at, in pixels. 0 keeps whatever size is
+	// current, which is what ImGui's PushFont takes 0 to mean.
+	float	size;
 	bool	separator;
 } ImGuiMarkdown_HeadingFormat;
 
