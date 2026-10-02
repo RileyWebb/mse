@@ -695,6 +695,9 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
         libmse_cmd_execute("exec", 1, &autoexec);
     }
 
+    // After both configs, so mse_ui_cyber already holds the user's choice.
+    mse_frontend_ui_cyber_init();
+
     SDL_SetHint("SDL_IME_SHOW_UI", "1");
 
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO | SDL_INIT_JOYSTICK | SDL_INIT_HAPTIC)) {
@@ -1048,6 +1051,9 @@ int mse_frontend_run(const mse_frontend_app_config_t *config) {
         LIBMSE_PROFILE_END(); // "ui"
 
         mse_frontend_chrome_draw_frame();
+        if (view_mode == MSE_FRONTEND_VIEW_MENU) {
+            mse_frontend_ui_cyber_overlay();
+        }
 
         LIBMSE_PROFILE_START("imgui render");
         igRender();

@@ -15,6 +15,29 @@
 // size in a view goes through it.
 extern float g_frontend_ui_scale;
 
+// --- cybercore (test branch) ------------------------------------------------
+//
+// mse_ui_cyber swaps the widget vocabulary's drawing for a HUD look: corners
+// cut rather than rounded, brackets on the corners of cards, a grid behind the
+// pages and scanlines over them. Turning it on also loads themes/cybercore.cfg,
+// and turning it off loads Midnight back.
+
+bool mse_frontend_ui_cyber(void);
+
+// Loads the cybercore theme if the look is on, and follows the cvar from then
+// on. Call once, after the startup configs have run.
+void mse_frontend_ui_cyber_init(void);
+
+// A rectangle with its top-left and bottom-right corners cut at 45 degrees.
+void mse_frontend_ui_cyber_chamfer(ImDrawList *dl, ImVec2 min, ImVec2 max, float cut, ImU32 colour, bool filled,
+                                   float thickness);
+
+// L-shaped marks on the four corners of a rectangle.
+void mse_frontend_ui_cyber_brackets(ImDrawList *dl, ImVec2 min, ImVec2 max, ImU32 colour);
+
+// Scanlines over the whole main viewport. Call once per frame, last.
+void mse_frontend_ui_cyber_overlay(void);
+
 static inline float mse_frontend_ui_px(float value)
 {
 	return value * g_frontend_ui_scale;

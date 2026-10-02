@@ -2,6 +2,8 @@
 
 #include "frontend_imgui.h"
 
+#include "libmse/libmse_cvar.h"
+
 #include <float.h>
 #include <math.h>
 #include <stdarg.h>
@@ -28,6 +30,112 @@ void mse_frontend_ui_shadow(ImDrawList *draw_list, ImVec2 min, ImVec2 max, float
 		const ImU32 colour = igGetColorU32_Vec4((ImVec4){0.0f, 0.0f, 0.0f, alpha});
 		ImDrawList_AddRectFilled(draw_list, (ImVec2){min.x - grow, min.y - grow + (grow * 0.35f)},
 								 (ImVec2){max.x + grow, max.y + grow + (grow * 0.35f)}, colour, rounding + grow, 0);
+	}
+}
+
+// --- cybercore ---------------------------------------------------------------
+
+LIBMSE_CVAR_DEFINE_INT(g_cv_cyber, "mse_ui_cyber", 1, "Cybercore UI test look (0 = off, 1 = on)");
+
+bool mse_frontend_ui_cyber(void)
+{
+	return g_cv_cyber != NULL && *g_cv_cyber != 0;
+}
+
+static void mse_frontend_ui_cyber_changed(libmse_cvar_t *cvar, void *user_data)
+{
+	(void)cvar;
+	(void)user_data;
+	mse_frontend_theme_load(mse_frontend_ui_cyber() ? "themes/cybercore.cfg" : "themes/midnight.cfg");
+}
+
+void mse_frontend_ui_cyber_init(void)
+{
+	if (mse_frontend_ui_cyber()) {
+		mse_frontend_theme_load("themes/cybercore.cfg");
+	}
+	libmse_cvar_register_change_cb("mse_ui_cyber", mse_frontend_ui_cyber_changed, NULL);
+}
+
+static void mse_frontend_ui_cyber_path(ImDrawList *dl, ImVec2 min, ImVec2 max, float cut)
+{
+	// Clockwise from the cut at the top left, which is the winding ImGui's
+	// anti-aliased convex fill expects.
+	ImDrawList_PathLineTo(dl, (ImVec2){min.x + cut, min.y});
+	ImDrawList_PathLineTo(dl, (ImVec2){max.x, min.y});
+	ImDrawList_PathLineTo(dl, (ImVec2){max.x, max.y - cut});
+	ImDrawList_PathLineTo(dl, (ImVec2){max.x - cut, max.y});
+	ImDrawList_PathLineTo(dl, (ImVec2){min.x, max.y});
+	ImDrawList_PathLineTo(dl, (ImVec2){min.x, min.y + cut});
+}
+
+void mse_frontend_ui_cyber_chamfer(ImDrawList *dl, ImVec2 min, ImVec2 max, float cut, ImU32 colour, bool filled,
+								   float thickness)
+{
+	if (dl == NULL) {
+		return;
+	}
+	cut = fminf(cut, fminf(max.x - min.x, max.y - min.y) * 0.5f);
+	mse_frontend_ui_cyber_path(dl, min, max, cut);
+	if (filled) {
+		ImDrawList_PathFillConvex(dl, colour);
+	} else {
+		ImDrawList_PathStroke(dl, colour, thickness, ImDrawFlags_Closed);
+	}
+}
+
+void mse_frontend_ui_cyber_brackets(ImDrawList *dl, ImVec2 min, ImVec2 max, ImU32 colour)
+{
+	if (dl == NULL) {
+		return;
+	}
+
+	const float len   = fminf(mse_frontend_ui_px(12.0f), fminf(max.x - min.x, max.y - min.y) * 0.25f);
+	const float thick = fmaxf(1.0f, floorf(mse_frontend_ui_px(2.0f)));
+	const float h     = thick * 0.5f;
+
+	// Inset by half the stroke so the marks sit on the edge, not across it.
+	const float x0 = min.x + h, y0 = min.y + h, x1 = max.x - h, y1 = max.y - h;
+
+	ImDrawList_AddLine(dl, (ImVec2){x0, y0 + len}, (ImVec2){x0, y0}, colour, thick);
+	ImDrawList_AddLine(dl, (ImVec2){x0, y0}, (ImVec2){x0 + len, y0}, colour, thick);
+	ImDrawList_AddLine(dl, (ImVec2){x1 - len, y0}, (ImVec2){x1, y0}, colour, thick);
+	ImDrawList_AddLine(dl, (ImVec2){x1, y0}, (ImVec2){x1, y0 + len}, colour, thick);
+	ImDrawList_AddLine(dl, (ImVec2){x0, y1 - len}, (ImVec2){x0, y1}, colour, thick);
+	ImDrawList_AddLine(dl, (ImVec2){x0, y1}, (ImVec2){x0 + len, y1}, colour, thick);
+	ImDrawList_AddLine(dl, (ImVec2){x1 - len, y1}, (ImVec2){x1, y1}, colour, thick);
+	ImDrawList_AddLine(dl, (ImVec2){x1, y1}, (ImVec2){x1, y1 - len}, colour, thick);
+}
+
+// Brackets on the current child window's own rectangle, drawn with clipping
+// widened to it -- the child's clip rectangle stops short of its border.
+static void mse_frontend_ui_cyber_decorate_window(ImVec4 colour)
+{
+	const ImVec2 pos  = igGetWindowPos();
+	const ImVec2 size = igGetWindowSize();
+	const ImVec2 max  = {pos.x + size.x, pos.y + size.y};
+
+	ImDrawList *dl = igGetWindowDrawList();
+	ImDrawList_PushClipRect(dl, pos, max, false);
+	mse_frontend_ui_cyber_brackets(dl, pos, max, mse_frontend_theme_u32(colour, 0.9f));
+	ImDrawList_PopClipRect(dl);
+}
+
+void mse_frontend_ui_cyber_overlay(void)
+{
+	if (!mse_frontend_ui_cyber()) {
+		return;
+	}
+
+	const ImGuiViewport *vp = igGetMainViewport();
+	ImDrawList          *dl = igGetForegroundDrawList_ViewportPtr((ImGuiViewport *)vp);
+
+	// One dark line in every three: enough to read as a screen, faint enough
+	// that text stays sharp underneath it.
+	const float step = fmaxf(3.0f, floorf(mse_frontend_ui_px(3.0f)));
+	const ImU32 line = igGetColorU32_Vec4((ImVec4){0.0f, 0.0f, 0.0f, 0.10f});
+	for (float y = vp->Pos.y; y < vp->Pos.y + vp->Size.y; y += step) {
+		ImDrawList_AddRectFilled(dl, (ImVec2){vp->Pos.x, y}, (ImVec2){vp->Pos.x + vp->Size.x, y + 1.0f}, line, 0.0f, 0);
 	}
 }
 
@@ -106,7 +214,11 @@ bool mse_frontend_ui_surface_begin(const char *id, ImVec2 size, ImGuiWindowFlags
 	igPushStyleVar_Float(ImGuiStyleVar_ChildBorderSize, 1.0f);
 	igPushStyleColor_Vec4(ImGuiCol_ChildBg, t->bg_raised);
 	igPushStyleColor_Vec4(ImGuiCol_Border, t->border);
-	return igBeginChild_Str(id, size, ImGuiChildFlags_Borders, flags);
+	const bool visible = igBeginChild_Str(id, size, ImGuiChildFlags_Borders, flags);
+	if (mse_frontend_ui_cyber()) {
+		mse_frontend_ui_cyber_decorate_window(t->accent);
+	}
+	return visible;
 }
 
 void mse_frontend_ui_surface_end(void)
@@ -149,6 +261,12 @@ void mse_frontend_ui_eyebrow(const char *text)
 	const float  size  = mse_frontend_imgui_font_size_small();
 	const float  track = mse_frontend_ui_px(1.6f);
 	const ImVec2 pos   = igGetCursorScreenPos();
+
+	char bracketed[256];
+	if (mse_frontend_ui_cyber()) {
+		snprintf(bracketed, sizeof(bracketed), "[ %s ]", text);
+		text = bracketed;
+	}
 
 	mse_frontend_ui_text_tracked(igGetWindowDrawList(), font, size, pos, igGetColorU32_Vec4(t->accent), text, track);
 	igDummy((ImVec2){mse_frontend_ui_text_tracked_width(font, size, text, track), size});
@@ -204,10 +322,19 @@ void mse_frontend_ui_section(const char *label)
 	const float  size  = mse_frontend_imgui_font_size_small();
 	const float  track = mse_frontend_ui_px(1.4f);
 	const ImVec2 pos   = igGetCursorScreenPos();
-	const float  width = mse_frontend_ui_text_tracked_width(font, size, label, track);
 	ImDrawList  *dl    = igGetWindowDrawList();
 
-	mse_frontend_ui_text_tracked(dl, font, size, pos, igGetColorU32_Vec4(t->text_muted), label, track);
+	// The cybercore look prefixes the label with a "//" in the accent.
+	float prefix = 0.0f;
+	if (mse_frontend_ui_cyber()) {
+		const char *slash = "// ";
+		mse_frontend_ui_text_tracked(dl, font, size, pos, igGetColorU32_Vec4(t->accent), slash, track);
+		prefix = mse_frontend_ui_text_tracked_width(font, size, slash, track) + track;
+	}
+
+	const float width = prefix + mse_frontend_ui_text_tracked_width(font, size, label, track);
+	mse_frontend_ui_text_tracked(dl, font, size, (ImVec2){pos.x + prefix, pos.y}, igGetColorU32_Vec4(t->text_muted),
+								 label, track);
 
 	// A hairline running from the label to the right edge ties the heading to
 	// the block it introduces without a full-width rule above it.
@@ -217,6 +344,11 @@ void mse_frontend_ui_section(const char *label)
 	if (right > line_x) {
 		ImDrawList_AddLine(dl, (ImVec2){line_x, line_y}, (ImVec2){right, line_y},
 						   igGetColorU32_Vec4(t->border), 1.0f);
+		if (mse_frontend_ui_cyber()) {
+			const float s = floorf(mse_frontend_ui_px(3.0f));
+			ImDrawList_AddRectFilled(dl, (ImVec2){right - s * 2.0f, line_y - s}, (ImVec2){right, line_y + s},
+									 igGetColorU32_Vec4(t->accent), 0.0f, 0);
+		}
 	}
 
 	igDummy((ImVec2){width, size});
@@ -225,8 +357,79 @@ void mse_frontend_ui_section(const char *label)
 
 // --- controls ---------------------------------------------------------------
 
+static bool mse_frontend_ui_cyber_button(const char *label, ImVec2 size, mse_frontend_ui_button_kind_t kind)
+{
+	const mse_frontend_theme_tokens_t *t = TOK;
+	const ImGuiStyle                  *st = igGetStyle();
+
+	const char  *shown_end = strstr(label, "##");
+	const ImVec2 text      = igCalcTextSize(label, NULL, true, 0.0f);
+	if (size.x <= 0.0f) size.x = text.x + (st->FramePadding.x * 2.0f);
+	if (size.y <= 0.0f) size.y = text.y + (st->FramePadding.y * 2.0f);
+
+	const ImVec2 min     = igGetCursorScreenPos();
+	const bool   pressed = igInvisibleButton(label, size, 0);
+	const bool   hovered = igIsItemHovered(0);
+	const bool   held    = igIsItemActive();
+	const float  hot     = mse_frontend_ui_anim(label, hovered, 18.0f);
+
+	const ImVec2 max = {min.x + size.x, min.y + size.y};
+	const float  cut = fminf(mse_frontend_ui_px(9.0f), size.y * 0.32f);
+	ImDrawList  *dl  = igGetWindowDrawList();
+
+	ImVec4 fill, edge, ink;
+	switch (kind) {
+	case MSE_FRONTEND_UI_BUTTON_PRIMARY:
+		fill = held ? t->accent_active : mse_frontend_ui_mix(t->accent, t->accent_hover, hot);
+		edge = t->accent_hover;
+		ink  = t->text_on_accent;
+		break;
+	case MSE_FRONTEND_UI_BUTTON_DANGER:
+		fill = mse_frontend_theme_alpha(t->danger, 0.12f + (0.14f * hot));
+		edge = t->danger;
+		ink  = t->danger;
+		break;
+	case MSE_FRONTEND_UI_BUTTON_GHOST:
+		fill = mse_frontend_theme_alpha(t->bg_hover, hot);
+		edge = mse_frontend_theme_alpha(t->accent, 0.0f);
+		ink  = mse_frontend_ui_mix(t->text_muted, t->accent, hot);
+		break;
+	case MSE_FRONTEND_UI_BUTTON_SECONDARY:
+	default:
+		fill = held ? t->bg_active : mse_frontend_ui_mix(t->bg_raised, t->bg_hover, hot);
+		edge = mse_frontend_theme_alpha(t->accent, 0.45f + (0.55f * hot));
+		ink  = mse_frontend_ui_mix(t->text, t->accent, hot);
+		break;
+	}
+
+	// The glow: two wider outlines, fading out, only while hovered.
+	if (hot > 0.01f && kind != MSE_FRONTEND_UI_BUTTON_GHOST) {
+		for (int i = 2; i >= 1; --i) {
+			const float g = mse_frontend_ui_px(2.0f) * (float)i;
+			mse_frontend_ui_cyber_chamfer(dl, (ImVec2){min.x - g, min.y - g}, (ImVec2){max.x + g, max.y + g}, cut + g,
+										  mse_frontend_theme_u32(edge, 0.16f * hot / (float)i), false,
+										  mse_frontend_ui_px(2.0f));
+		}
+	}
+
+	mse_frontend_ui_cyber_chamfer(dl, min, max, cut, igGetColorU32_Vec4(fill), true, 0.0f);
+	if (edge.w > 0.0f) {
+		mse_frontend_ui_cyber_chamfer(dl, min, max, cut, igGetColorU32_Vec4(edge), false, 1.0f);
+	}
+
+	const ImVec2 at = {floorf(min.x + ((size.x - text.x) * st->ButtonTextAlign.x)),
+					   floorf(min.y + ((size.y - text.y) * st->ButtonTextAlign.y))};
+	ImDrawList_AddText_Vec2(dl, at, igGetColorU32_Vec4(ink), label, shown_end);
+
+	return pressed;
+}
+
 bool mse_frontend_ui_button(const char *label, ImVec2 size, mse_frontend_ui_button_kind_t kind)
 {
+	if (mse_frontend_ui_cyber()) {
+		return mse_frontend_ui_cyber_button(label, size, kind);
+	}
+
 	const mse_frontend_theme_tokens_t *t = TOK;
 
 	ImVec4 fill, fill_hover, fill_active, text, border;
@@ -534,6 +737,10 @@ void mse_frontend_ui_stat_tile(const char *label, const char *value, const char 
 		const ImVec2 win_pos  = igGetWindowPos();
 		const ImVec2 win_size = igGetWindowSize();
 
+		if (mse_frontend_ui_cyber()) {
+			mse_frontend_ui_cyber_decorate_window(colour);
+		}
+
 		// A short accent rule at the left edge keys the tile to its metric.
 		ImDrawList_AddRectFilled(igGetWindowDrawList(),
 								 (ImVec2){win_pos.x, win_pos.y + mse_frontend_ui_px(14.0f)},
@@ -643,6 +850,28 @@ void mse_frontend_ui_backdrop(ImDrawList *draw_list, ImVec2 min, ImVec2 max)
 	const mse_frontend_theme_tokens_t *t = TOK;
 
 	ImDrawList_AddRectFilled(draw_list, min, max, igGetColorU32_Vec4(t->bg_base), 0.0f, 0);
+
+	if (mse_frontend_ui_cyber()) {
+		// A grid in the accent, with every fourth line brighter, and the
+		// accent rising off the bottom edge like a horizon.
+		const float step  = floorf(mse_frontend_ui_px(28.0f));
+		const ImU32 minor = mse_frontend_theme_u32(t->accent, 0.035f);
+		const ImU32 major = mse_frontend_theme_u32(t->accent, 0.075f);
+		int         i     = 0;
+		for (float x = min.x; x < max.x; x += step, ++i) {
+			ImDrawList_AddLine(draw_list, (ImVec2){x, min.y}, (ImVec2){x, max.y}, (i % 4) ? minor : major, 1.0f);
+		}
+		i = 0;
+		for (float y = min.y; y < max.y; y += step, ++i) {
+			ImDrawList_AddLine(draw_list, (ImVec2){min.x, y}, (ImVec2){max.x, y}, (i % 4) ? minor : major, 1.0f);
+		}
+
+		const ImU32 clear = mse_frontend_theme_u32(t->accent, 0.0f);
+		const ImU32 rise  = mse_frontend_theme_u32(t->accent, 0.10f);
+		ImDrawList_AddRectFilledMultiColor(draw_list, (ImVec2){min.x, max.y - ((max.y - min.y) * 0.35f)}, max, clear,
+										   clear, rise, rise);
+		return;
+	}
 
 	// One wash of accent bleeding out of the top-left corner, and a darkening
 	// towards the bottom. Two gradients instead of a grid of animated dots:

@@ -491,13 +491,21 @@ void mse_frontend_chrome_menu_bar_end(void)
 	// space the menus leave -- sliding it sideways to fit would make it look
 	// like one more menu.
 	{
-		const char  *title  = SDL_GetWindowTitle(g_window);
+		// The cybercore look puts a status line here instead, with a block
+		// cursor that blinks once a second.
+		char        cyber_title[96];
+		const char *title = SDL_GetWindowTitle(g_window);
+		if (mse_frontend_ui_cyber()) {
+			const bool on = ((int)(igGetTime() * 2.0)) % 2 == 0;
+			snprintf(cyber_title, sizeof(cyber_title), "MSE // MULTI-SYSTEM EMULATOR %s", on ? "_" : " ");
+			title = cyber_title;
+		}
 		const ImVec2 extent = igCalcTextSize(title, NULL, false, 0.0f);
 		const float  x      = floorf(bar_pos.x + ((bar_size.x - extent.x) * 0.5f));
 		const float  gap    = mse_frontend_ui_px(16.0f);
 		if (x > menus_end + gap && x + extent.x < buttons_x - gap) {
 			ImDrawList_AddText_Vec2(igGetWindowDrawList(), (ImVec2){x, floorf(bar_pos.y + ((bar_size.y - extent.y) * 0.5f))},
-									igGetColorU32_Vec4(t->text_faint), title, NULL);
+									igGetColorU32_Vec4(mse_frontend_ui_cyber() ? t->accent : t->text_faint), title, NULL);
 		}
 	}
 

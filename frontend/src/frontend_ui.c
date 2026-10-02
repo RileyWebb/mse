@@ -119,12 +119,29 @@ bool mse_frontend_ui_sidebar_row(const char *icon, const char *label, bool selec
 	const ImVec2 row_max = {item_pos.x + item_size.x - inset, item_pos.y + item_size.y - mse_frontend_ui_px(2.0f)};
 	const float  rounding = t->rounding_sm;
 
+	const bool cyber = mse_frontend_ui_cyber();
+	const float cut  = mse_frontend_ui_px(8.0f);
+
 	if (hot > 0.01f && on < 0.99f) {
 		const ImVec4 fill = mse_frontend_theme_alpha(held ? t->bg_active : t->bg_hover, hot * (1.0f - on));
-		ImDrawList_AddRectFilled(draw_list, row_min, row_max, igGetColorU32_Vec4(fill), rounding, 0);
+		if (cyber) {
+			mse_frontend_ui_cyber_chamfer(draw_list, row_min, row_max, cut, igGetColorU32_Vec4(fill), true, 0.0f);
+		} else {
+			ImDrawList_AddRectFilled(draw_list, row_min, row_max, igGetColorU32_Vec4(fill), rounding, 0);
+		}
 	}
 
-	if (on > 0.01f) {
+	if (on > 0.01f && cyber) {
+		// Selected: a soft fill, a clipped outline, and a solid bar down the
+		// whole left edge rather than a marker growing out of the middle.
+		mse_frontend_ui_cyber_chamfer(draw_list, row_min, row_max, cut, mse_frontend_theme_u32(t->accent_soft, on), true,
+									  0.0f);
+		mse_frontend_ui_cyber_chamfer(draw_list, row_min, row_max, cut, mse_frontend_theme_u32(t->accent, 0.7f * on),
+									  false, 1.0f);
+		ImDrawList_AddRectFilled(draw_list, (ImVec2){item_pos.x, row_min.y + cut},
+								 (ImVec2){item_pos.x + mse_frontend_ui_px(3.0f), row_max.y},
+								 mse_frontend_theme_u32(t->accent, on), 0.0f, 0);
+	} else if (on > 0.01f) {
 		ImDrawList_AddRectFilled(draw_list, row_min, row_max, mse_frontend_theme_u32(t->accent_soft, on), rounding, 0);
 		ImDrawList_AddRect(draw_list, row_min, row_max, mse_frontend_theme_u32(t->accent, 0.28f * on), rounding, 0, 1.0f);
 
@@ -166,7 +183,19 @@ bool mse_frontend_ui_sidebar_row(const char *icon, const char *label, bool selec
 	if (!icons_only) {
 		ImFont     *body_font = mse_frontend_imgui_font_body();
 		const float body_size = mse_frontend_imgui_font_size_body();
-		if (body_font != NULL) {
+		if (body_font != NULL && cyber) {
+			char upper[64];
+			size_t n = 0;
+			for (; label[n] != '\0' && n < sizeof(upper) - 1; ++n) {
+				upper[n] = (label[n] >= 'a' && label[n] <= 'z') ? (char)(label[n] - 32) : label[n];
+			}
+			upper[n] = '\0';
+			const float small = mse_frontend_imgui_font_size_small() * 1.08f;
+			mse_frontend_ui_text_tracked(draw_list, body_font, small,
+										 (ImVec2){icon_x + icon_size + mse_frontend_ui_px(12.0f),
+												  centre_y - (small * 0.56f)},
+										 igGetColorU32_Vec4(text_colour), upper, mse_frontend_ui_px(1.6f));
+		} else if (body_font != NULL) {
 			ImDrawList_AddText_FontPtr(draw_list, body_font, body_size,
 									   (ImVec2){icon_x + icon_size + mse_frontend_ui_px(12.0f),
 												centre_y - (body_size * 0.56f)},
