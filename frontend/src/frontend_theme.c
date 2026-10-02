@@ -37,11 +37,12 @@ const mse_frontend_theme_tokens_t *mse_frontend_theme(void) {
 // --- one-off colour and animation helpers ------------------------------------
 
 ImVec4 mse_frontend_theme_alpha(ImVec4 colour, float alpha) {
-    // Sets the opacity rather than scaling it: the callers pass the opacity
-    // they want the result to have, and a token that already carries one --
-    // accent_soft, accent_glow -- would otherwise come out twice as faint as
-    // asked for.
-    return (ImVec4){colour.x, colour.y, colour.z, alpha};
+    // Scales the opacity the colour already has. Callers pass a fade -- an
+    // animation's 0..1, a hover strength -- and a token that carries its own
+    // opacity, accent_soft at 0.14 say, has to keep it: setting the alpha
+    // instead turned the selected sidebar row into a slab of solid accent the
+    // moment its fade reached 1. For every opaque token the two are the same.
+    return (ImVec4){colour.x, colour.y, colour.z, colour.w * alpha};
 }
 
 ImU32 mse_frontend_theme_u32(ImVec4 colour, float alpha) {
